@@ -262,11 +262,15 @@ jobs:
         run: |
           node tests/unit/purge-footage.mjs
 
-      # get_current_time: the resolveComp fallback (explicit compId, else the
-      # active comp, else a named error) and the seconds/frame conversion.
-      - name: get_current_time resolves and reports correctly
+      # get_current_time / set_current_time: the shared resolveComp fallback
+      # (explicit compId, else the active comp, else a named error), the
+      # seconds/frame conversion both ways, set_current_time's bounds check
+      # against the comp's own duration, and that it never opens an undo
+      # group — checked against the real dispatch(), not just its own claim.
+      - name: current-time reads and writes resolve and report correctly
         run: |
           node tests/unit/get-current-time.mjs
+          node tests/unit/set-current-time.mjs
 
       # The guidance carriers, from the other side: that the guide sources
       # cross-reference files that exist, and that a house style is digested to

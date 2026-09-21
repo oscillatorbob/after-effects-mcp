@@ -329,6 +329,25 @@ export const GetCurrentTime = z
       .describe("Comp to read the playhead from. Omit to use the comp active in the viewer."),
   })
   .strict();
+export const SetCurrentTime = crossField(
+  z.object({
+    compId: z.number().optional()
+      .describe("Comp whose playhead to move. Omit to use the comp active in the viewer."),
+    time: z.number().finite().nonnegative().optional()
+      .describe("Target time in seconds, >= 0. Exactly one of `time` or `frame`."),
+    frame: z.number().int().nonnegative().optional()
+      .describe("Target frame number — an integer >= 0, converted to seconds as frame / comp.frameRate. Exactly one of `time` or `frame`."),
+  }).strict(),
+  // Refused outside the comp's own 0..duration rather than left to AE: nothing
+  // in this codebase has ever measured what comp.time does with a value
+  // outside that range, so the JSX handler checks it explicitly too — this
+  // rule alone can't, since duration is only known once a comp is resolved.
+  {
+    kind: "exactlyOne",
+    fields: ["time", "frame"],
+    then: "`frame` converts to seconds as frame / comp.frameRate — pass whichever you already have.",
+  }
+);
 
 // ---------- comp snapshots (half server-resident: the panel gathers, the server remembers) ----------
 export const SnapshotComp = z
@@ -1199,6 +1218,7 @@ export const OpSchemas = {
   set_active_comp: SetActiveComp,
   duplicate_comp: DuplicateComp,
   get_current_time: GetCurrentTime,
+  set_current_time: SetCurrentTime,
   snapshot_comp: SnapshotComp,
   diff_comp: DiffComp,
   // layers
@@ -1328,6 +1348,10 @@ export const OpMutation = {
   set_active_comp: "write",
   duplicate_comp: "write",
   get_current_time: "read",
+  // Moves the CTI in the live project, so it serializes against other writes
+  // like any other op that touches AE state — even though, unlike them, it
+  // never opens an undo group (comps.jsx: it's viewer state, not an edit).
+  set_current_time: "write",
   // Fingerprints: they forward a read to the panel and keep the answer in the
   // server. Nothing is written to the project or the undo stack, so they must
   // not queue — the point of a diff is checking on a write that is in flight.

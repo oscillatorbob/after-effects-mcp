@@ -61,6 +61,72 @@ OPS.get_current_time = noUndo(function (args) {
   };
 });
 
+// Float noise around a time boundary — the same order of magnitude
+// snapshot.jsx treats as noise rather than a real change, and audio.jsx's own
+// cue-placement epsilon (__CUE_TIME_EPS).
+var __TIME_EPS = 1e-6;
+
+// Moves the playhead. noUndo: the CTI is viewer state, not a project edit —
+// scrubbing the timeline by hand creates no Undo entry either, so wrapping
+// this in a group would be a step that undoes nothing when pressed. It is
+// still classified "write" in OpMutation, because it touches live AE state
+// and has to serialize against other writes like any of them; noUndo and the
+// write-queue classification are independent (dispatch() vs. the server's
+// lease) and this op deliberately picks different answers to each.
+//
+// `time`/`frame` exclusivity is enforced by the schema's crossField rule for
+// a normal call; the check here is for run_batch, whose steps are never
+// zod-validated, and for any other path that reaches this handler directly.
+// It enforces EXACTLY one, the same as the schema does — neither given and
+// both given are both refused, rather than silently picking `time` when both
+// arrive. A tool whose contract is "exactly one of X or Y" must not have a
+// second, looser contract underneath for whichever caller skips the schema.
+//
+// Bounds are checked here, not left to AE: nothing in this codebase has ever
+// measured what comp.time does with a value outside 0..duration, so a target
+// outside that range is refused rather than silently clamped or wrapped.
+// 0..duration is inclusive at both ends, within __TIME_EPS of float slack —
+// the same convention audio.jsx's cue placement and mogrt.jsx's posterTime
+// already use for "does this time belong to this comp".
+OPS.set_current_time = noUndo(function (args) {
+  var c = resolveComp(args);
+  var hasTime = args.time !== undefined && args.time !== null;
+  var hasFrame = args.frame !== undefined && args.frame !== null;
+
+  if (hasTime === hasFrame) {
+    throw new Error("set_current_time: pass exactly one of time or frame.");
+  }
+
+  var target;
+  if (hasTime) {
+    if (typeof args.time !== "number" || !isFinite(args.time)) {
+      throw new Error("set_current_time: time must be a finite number of seconds; got " + String(args.time));
+    }
+    target = args.time;
+  } else {
+    if (typeof args.frame !== "number" || !isFinite(args.frame) || Math.floor(args.frame) !== args.frame) {
+      throw new Error("set_current_time: frame must be a finite integer; got " + String(args.frame));
+    }
+    target = args.frame / c.frameRate;
+  }
+
+  if (target < -__TIME_EPS || target > c.duration + __TIME_EPS) {
+    throw new Error(
+      "set_current_time: target time " + target + "s is outside the comp, which runs 0 to " + c.duration + "s."
+    );
+  }
+
+  c.time = target;
+  var t = c.time;
+  return {
+    compId: c.id,
+    compName: c.name,
+    time: t,
+    frameRate: c.frameRate,
+    frame: Math.round(t * c.frameRate)
+  };
+});
+
 OPS.create_comp = function (args) {
   var bg = args.bgColor || [0, 0, 0];
   var c = app.project.items.addComp(
