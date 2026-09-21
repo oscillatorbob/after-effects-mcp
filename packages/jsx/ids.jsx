@@ -8,6 +8,19 @@ function getCompById(id) {
   return item;
 }
 
+// Resolve a comp from an optional explicit id, falling back to the comp active
+// in the viewer. For read ops where "the comp I'm looking at" is a reasonable
+// default and the caller may not have its id at hand — the same fallback
+// screenshot_frame's own `time` argument uses, defaulting to the comp's
+// current time rather than requiring one.
+function resolveComp(args) {
+  var id = args ? args.compId : null;
+  if (id !== null && id !== undefined) return getCompById(id);
+  var active = app.project.activeItem;
+  if (active instanceof CompItem) return active;
+  throw new Error("No active comp, and no compId given. Open a comp in the viewer, or pass compId.");
+}
+
 function getItemById(id) {
   if (id === null || id === undefined) throw new Error("itemId required");
   var item = app.project.itemByID(id);

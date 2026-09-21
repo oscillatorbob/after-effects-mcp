@@ -323,6 +323,12 @@ export const DuplicateComp = z
       .describe("With deep:true, name each duplicated nested comp '<original><nameSuffix>'. Omit to let AE name them."),
   })
   .strict();
+export const GetCurrentTime = z
+  .object({
+    compId: z.number().optional()
+      .describe("Comp to read the playhead from. Omit to use the comp active in the viewer."),
+  })
+  .strict();
 
 // ---------- comp snapshots (half server-resident: the panel gathers, the server remembers) ----------
 export const SnapshotComp = z
@@ -1192,6 +1198,7 @@ export const OpSchemas = {
   delete_comp: DeleteComp,
   set_active_comp: SetActiveComp,
   duplicate_comp: DuplicateComp,
+  get_current_time: GetCurrentTime,
   snapshot_comp: SnapshotComp,
   diff_comp: DiffComp,
   // layers
@@ -1320,6 +1327,7 @@ export const OpMutation = {
   delete_comp: "write",
   set_active_comp: "write",
   duplicate_comp: "write",
+  get_current_time: "read",
   // Fingerprints: they forward a read to the panel and keep the answer in the
   // server. Nothing is written to the project or the undo stack, so they must
   // not queue — the point of a diff is checking on a write that is in flight.

@@ -44,6 +44,23 @@ OPS.get_comp = noUndo(function (args) {
   return __compSummary(getCompById(args.compId));
 });
 
+// Read-only: reports the playhead, touches nothing. compId is optional —
+// resolveComp (ids.jsx) falls back to the comp active in the viewer, so an
+// agent that hasn't read the project summary yet still has something to call.
+OPS.get_current_time = noUndo(function (args) {
+  var c = resolveComp(args);
+  var t = c.time;
+  return {
+    compId: c.id,
+    compName: c.name,
+    time: t,
+    frameRate: c.frameRate,
+    // Rounded, not floored: floating-point time sitting a hair short of an
+    // exact frame boundary must read as that frame, not the one before it.
+    frame: Math.round(t * c.frameRate)
+  };
+});
+
 OPS.create_comp = function (args) {
   var bg = args.bgColor || [0, 0, 0];
   var c = app.project.items.addComp(
