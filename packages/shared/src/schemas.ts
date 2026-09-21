@@ -886,6 +886,22 @@ export const ScreenshotLayer = z.object({
   layerId: z.number(),
   time: z.number().optional(),
   downsample: downsampleParam,
+  /**
+   * screenshot_layer's own render is already genuinely transparent — measured
+   * against the real op, not assumed: colour type 6, alpha 0 and black RGB
+   * underneath outside the isolated layer. Any white a viewer shows there is
+   * that viewer compositing the PNG onto white, not this tool. This exists
+   * because that transparency is exactly what makes bright/white/glow content
+   * hard to judge by eye, so an explicit opaque background is worth offering
+   * — never a default, since the real alpha is the more useful answer for
+   * everything that isn't a visual QA pass by a human.
+   */
+  background: z
+    .union([z.literal("black"), Color])
+    .optional()
+    .describe(
+      "Composite the isolated layer over a solid instead of leaving it transparent, for judging white/bright/glow/bloom content that a transparent PNG can hide or misrepresent depending on how it is displayed. Omit for the default: no background, real alpha, exactly the behaviour before this option existed. \"black\" is a shorthand; an [r,g,b] (0..1) triple sets any other solid colour. The background is a temporary solid placed behind the isolated layer for this one render and removed immediately afterward, in every case including a failed render — it never touches the target layer, any other layer, or anything about the project beyond that one frame."
+    ),
 });
 
 /**

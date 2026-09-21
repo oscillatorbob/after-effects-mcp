@@ -201,6 +201,16 @@ jobs:
       - name: Screenshot downsampling derives and restores the comp resolution
         run: node tests/unit/screenshot-resolution.mjs
 
+      # screenshot_layer's optional QA background: measured live to be
+      # genuinely additive (default stays transparent, real alpha untouched)
+      # and genuinely temporary (the solid is removed even when the render
+      # throws). Also the regression for a bug found during that same live
+      # session: the solo-restore loop threw on any comp with a disabled
+      # layer, because AE refuses `.solo = x` on one at all — for either
+      # value of x, and whether or not a background was requested.
+      - name: screenshot_layer's background is temporary and disabled layers do not crash it
+        run: node tests/unit/screenshot-layer-background.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.

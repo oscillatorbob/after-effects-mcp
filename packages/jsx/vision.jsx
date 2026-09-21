@@ -131,28 +131,73 @@ OPS.screenshot_frame = noUndo(function (args) {
   };
 });
 
+// Measured against the real op (colour type 6, alpha 0, black RGB underneath
+// outside the isolated layer): this always rendered genuinely transparent.
+// Any white a caller sees there is a viewer compositing the PNG onto white,
+// never this tool — so `background` is an opt-in solid for a visual QA pass,
+// not a fix for anything, and the default stays untouched: no background,
+// real alpha, exactly the behaviour before this option existed.
 OPS.screenshot_layer = noUndo(function (args) {
   var c = getCompById(args.compId);
   var l = getLayerById(c, args.layerId);
   var t = (args.time !== undefined && args.time !== null) ? args.time : c.time;
-  // Capture all current solo states; solo target; capture; restore.
-  var prevSolo = [];
-  for (var i = 1; i <= c.numLayers; i++) {
-    var ll = c.layer(i);
-    prevSolo.push({ idx: i, solo: ll.solo });
-    ll.solo = false;
-  }
-  l.solo = true;
   var ds = __resolveDownsample(c, args.downsample);
   var path = __tmpPngPath();
   var f = new File(path);
+
+  // Capture every solo-able layer's state; solo the target (and an optional
+  // background solid) alone; restore everything in `finally`, whatever
+  // happens in between — including inside this same loop. AE refuses to
+  // touch `.solo` on a disabled layer at all ("Solo flag can not be set on a
+  // layer if the layer is not enabled"), so a disabled layer is skipped
+  // rather than forced to false; measured live, any comp with one disabled
+  // layer threw here before try/finally even started, leaving whatever solo
+  // states the loop had already changed with nothing to put them back.
+  var prevSolo = [];
+  var bgLayer = null;
+  // addSolid() creates two things, not one: the AVLayer in the comp, and a
+  // backing Solid FootageItem in the Project panel that layer.source points
+  // at. Removing only the layer leaves that item behind — measured live: a
+  // fresh, brand-new item every call (addSolid never reuses an existing
+  // solid), so it is always safe to delete once captured here, and never a
+  // pre-existing project item.
+  var bgSource = null;
   try {
+    for (var i = 1; i <= c.numLayers; i++) {
+      var ll = c.layer(i);
+      if (!ll.enabled) continue;
+      prevSolo.push({ idx: i, solo: ll.solo });
+      ll.solo = false;
+    }
+    l.solo = true;
+
+    if (args.background !== undefined && args.background !== null) {
+      // "black" or an [r,g,b] triple, already validated by the schema.
+      var color = (args.background === "black") ? [0, 0, 0] : args.background;
+      bgLayer = c.layers.addSolid(color, "AE MCP: screenshot background", c.width, c.height, c.pixelAspect, c.duration);
+      bgSource = bgLayer.source;
+      bgLayer.moveAfter(l);
+      bgLayer.solo = true;
+    }
+
     __saveFrameAt(c, t, f, ds);
   } finally {
-    // restore
-    l.solo = false;
+    // Layer removed before anything else, so the index shift it caused
+    // (every layer behind it pushed back by one) is undone before prevSolo's
+    // captured indices are used to restore. The backing source is removed
+    // next, independently guarded so a failure there still falls through to
+    // solo restoration — and captured into bgSource before the layer was
+    // ever touched, so this removes the exact item this call created, never
+    // one resolved by name or position afterward.
+    if (bgLayer) {
+      try { bgLayer.remove(); } catch (e0) {}
+    }
+    if (bgSource) {
+      try { bgSource.remove(); } catch (eS) {}
+    }
+    try { l.solo = false; } catch (e1) {}
     for (var j = 0; j < prevSolo.length; j++) {
-      try { c.layer(prevSolo[j].idx).solo = prevSolo[j].solo; } catch (e) {}
+      try { c.layer(prevSolo[j].idx).solo = prevSolo[j].solo; } catch (e2) {}
     }
   }
   return {
