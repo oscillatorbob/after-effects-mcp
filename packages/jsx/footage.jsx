@@ -188,6 +188,74 @@ OPS.import_footage = function (args) {
   );
 };
 
+// Every layer already using itemId keeps using it: `.replace()`/`.replaceWithSequence()`
+// change the FootageItem's own source in place, never its id, and never touch
+// which layers point at it — so this is deliberately not "delete and re-import
+// and relink", which would leave transforms/effects/keyframes/parenting/expressions
+// behind on layers pointing at a now-gone item.
+OPS.replace_footage = function (args) {
+  var item = app.project.itemByID(args.itemId);
+  if (!item) throw new Error("No project item with id " + args.itemId);
+  if (item instanceof FolderItem) throw new Error("Item " + args.itemId + " (\"" + item.name + "\") is a folder, not footage — nothing to replace.");
+  if (item instanceof CompItem) throw new Error("Item " + args.itemId + " (\"" + item.name + "\") is a comp, not footage — nothing to replace.");
+  if (!(item instanceof FootageItem)) throw new Error("Item " + args.itemId + " (\"" + item.name + "\") is not a FootageItem — nothing to replace.");
+
+  var src = null;
+  try { src = item.mainSource; } catch (e) {}
+  // A solid or a placeholder has no external file to replace — replacing one
+  // with a real file would be converting the item's kind, which is not what
+  // this op does. Only a footage item that already came from a file qualifies.
+  if (!(src instanceof FileSource)) {
+    throw new Error(
+      "Item " + args.itemId + " (\"" + item.name + "\") has no external file source to replace" +
+      (src instanceof SolidSource ? " — it is a solid" : "") + ". replace_footage only replaces the source of footage originally imported from a file."
+    );
+  }
+
+  var oldPath = null;
+  try { if (src.file) oldPath = String(src.file.fsName); } catch (e2) {}
+
+  var newPath = args.filePath;
+  var file = new File(newPath);
+  if (!file.exists) throw new Error("No file at " + newPath);
+
+  if (args.sequence === true) {
+    // forceAlphabetical: true — the sane default for a numbered sequence, and
+    // the only ordering AE's own dialog offers without a second prompt. Not
+    // exposed as its own option in v1; import_footage's `sequence` flag is
+    // the same plain boolean, no nested settings object.
+    item.replaceWithSequence(file, true);
+  } else {
+    item.replace(file);
+  }
+
+  var usedIn = __usedInList(item);
+  var layerCount = 0;
+  for (var u = 0; u < usedIn.length; u++) {
+    var c = app.project.itemByID(usedIn[u].id);
+    if (!c) continue;
+    for (var j = 1; j <= c.numLayers; j++) {
+      var l = c.layer(j);
+      try { if (l.source === item) layerCount += 1; } catch (e3) {}
+    }
+  }
+
+  return {
+    itemId: item.id,
+    name: item.name,
+    oldFilePath: oldPath,
+    newFilePath: newPath,
+    width: item.width,
+    height: item.height,
+    duration: item.duration,
+    frameRate: (item.frameRate !== undefined) ? item.frameRate : null,
+    isStill: !!item.footageMissing ? null : (item.duration === 0),
+    footageMissing: !!item.footageMissing,
+    usedIn: usedIn,
+    layerCount: layerCount
+  };
+};
+
 OPS.create_footage_layer = function (args) {
   var comp = getCompById(args.compId);
   var item = app.project.itemByID(args.itemId);

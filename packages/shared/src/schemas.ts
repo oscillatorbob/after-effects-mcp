@@ -1012,6 +1012,14 @@ export const PurgeUnusedFootage = z
       .describe("Restrict the sweep to one project folder and everything nested under it. A folder id from get_project_summary; omit for the whole project."),
   })
   .strict();
+export const ReplaceFootage = z
+  .object({
+    itemId: z.number().describe("The FootageItem's project item id (from import_footage or get_project_summary) whose source file to replace. Every layer already using this item keeps using it — nothing is deleted, re-imported or re-created."),
+    filePath: z.string().min(1).describe("Absolute path to the replacement file."),
+    sequence: z.boolean().default(false).optional()
+      .describe("Treat filePath as the first file of a numbered image sequence, replacing with the whole sequence (alphabetical order) rather than one frame. Same convention as import_footage's own `sequence` flag."),
+  })
+  .strict();
 
 // ---------- audio ----------
 export const AudioCue = z
@@ -1300,6 +1308,7 @@ export const OpSchemas = {
   import_footage: ImportFootage,
   create_footage_layer: CreateFootageLayer,
   purge_unused_footage: PurgeUnusedFootage,
+  replace_footage: ReplaceFootage,
   // audio
   place_audio_cues: PlaceAudioCues,
   // motion graphics templates
@@ -1441,6 +1450,7 @@ export const OpMutation = {
   // not per call — a dry run waiting behind a batch costs a little time and a
   // real one interleaving with it costs the batch's undo step.
   purge_unused_footage: "write",
+  replace_footage: "write",
   // audio cues — imports footage and adds layers.
   place_audio_cues: "write",
   // motion graphics templates — saves the project before exporting.

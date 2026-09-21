@@ -211,6 +211,15 @@ jobs:
       - name: screenshot_layer's background is temporary and disabled layers do not crash it
         run: node tests/unit/screenshot-layer-background.mjs
 
+      # replace_footage: swap a FootageItem's source file without touching what
+      # references it. Proven by object identity (the same layer.source, the
+      # same item id), not by a same-shaped replacement — that is the whole
+      # reason this op exists instead of delete-reimport-relink. A rejected
+      # target (comp/folder/solid/missing file) leaves the old source and the
+      # item untouched, and a failed replace() creates no duplicate item.
+      - name: replace_footage preserves layer references and rejects unsafe targets
+        run: node tests/unit/replace-footage.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.
