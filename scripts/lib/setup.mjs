@@ -4,10 +4,23 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const distDir = path.join(root, "packages", "mcp-server", "dist", "setup");
+
+// Dynamic import() resolves an absolute-path specifier as a URL, and a bare
+// Windows path (`C:\...`) is not a valid one — pathToFileURL is what every
+// test in tests/unit/ already uses for this same dist-loading pattern.
+// Exported so tests/unit/dev-scripts-esm.mjs can check the conversion itself
+// rather than only the dynamic import it feeds.
+export function toImportUrl(absolutePath) {
+  return pathToFileURL(absolutePath).href;
+}
+
+function importDist(name) {
+  return import(toImportUrl(path.join(distDir, name)));
+}
 
 export async function loadSetup() {
   if (!fs.existsSync(path.join(distDir, "paths.js"))) {
@@ -15,10 +28,10 @@ export async function loadSetup() {
     process.exit(1);
   }
   const [paths, platform, install, check] = await Promise.all([
-    import(path.join(distDir, "paths.js")),
-    import(path.join(distDir, "platform.js")),
-    import(path.join(distDir, "install.js")),
-    import(path.join(distDir, "check.js")),
+    importDist("paths.js"),
+    importDist("platform.js"),
+    importDist("install.js"),
+    importDist("check.js"),
   ]);
   return { ...paths, ...platform, ...install, ...check };
 }

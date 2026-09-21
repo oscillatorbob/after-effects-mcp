@@ -349,6 +349,15 @@ jobs:
               if(!platform.ok||!assets.ok) process.exit(1);
             }).catch(e=>{console.error(e);process.exit(1);});'
 
+      # scripts/lib/setup.mjs (doctor, install-panel, uninstall-panel,
+      # enable-debug) dynamic-imports the compiled setup/ dist modules by
+      # absolute path. On Windows an unconverted path hits
+      # ERR_UNSUPPORTED_ESM_URL_SCHEME, since import() treats an absolute-path
+      # specifier as a URL and a bare drive letter is not a valid one — this
+      # runner is the only place that regression is visible.
+      - name: Dev scripts convert absolute paths before dynamic import
+        run: node tests/unit/dev-scripts-esm.mjs
+
       # Both entry points into the same scaffold: the terminal one, and the
       # init_project tool that clients without filesystem access rely on.
       - name: Scaffold works from the CLI
