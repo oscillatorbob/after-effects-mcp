@@ -228,6 +228,16 @@ jobs:
       - name: get_render_queue / queue_comp never render and report AE's readback
         run: node tests/unit/render-queue.mjs
 
+      # itemByID does not reliably return null for a missing id — measured
+      # live, it throws AE's own internal "Item Not Found" message instead,
+      # for every id tried. itemByIdOrNull (ids.jsx) normalizes both observed
+      # shapes; this runs every op built on it (getCompById and everything
+      # using it, replace_footage, create_footage_layer, purge_unused_footage's
+      # folderId) against both, and proves an unrelated AE error is never
+      # swallowed as a false "missing" case.
+      - name: itemByID's missing-item throw is normalized everywhere it is used
+        run: node tests/unit/item-by-id.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.

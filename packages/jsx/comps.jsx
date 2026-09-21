@@ -179,7 +179,7 @@ OPS.delete_comp = function (args) {
     // Re-fetched by id after the removal rather than held across it — the
     // handle staleness this repo has measured elsewhere is not worth risking
     // for one lookup per solid.
-    var item = app.project.itemByID(solids[i].id);
+    var item = itemByIdOrNull(solids[i].id);
     if (!item) { gone.push(solids[i]); continue; }
     var uses = __usedInList(item);
     if (uses.length > 0) {
@@ -297,7 +297,7 @@ function __dupRepoint(comp, opts, depth) {
 // A `folderId` argument resolved to a FolderItem, or a thrown error naming the
 // id and what it actually is. Shared by duplicate_comp and purge_unused_footage.
 function __folderArg(id) {
-  var f = app.project.itemByID(id);
+  var f = itemByIdOrNull(id);
   if (!f) throw new Error("No project item with id " + id + " to use as folderId");
   if (!(f instanceof FolderItem)) {
     throw new Error(
@@ -345,7 +345,7 @@ OPS.duplicate_comp = function (args) {
   }
 
   // Re-fetch by id rather than trusting the handle held across the duplication.
-  var made = app.project.itemByID(newId);
+  var made = itemByIdOrNull(newId);
   if (!made) throw new Error("duplicate_comp created comp " + newId + " but it could not be read back");
   if (folder) made.parentFolder = folder;
 

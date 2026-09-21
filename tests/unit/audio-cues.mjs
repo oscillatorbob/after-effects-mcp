@@ -39,6 +39,11 @@ const jsxDir = path.join(root, "packages", "jsx");
 const read = (f) => fs.readFileSync(path.join(jsxDir, f), "utf8");
 // core.jsx for dispatch/noUndoWhen, footage.jsx for the import and the project
 // scan audio.jsx reuses. In the shipped bundle all three share one scope.
+// ids.jsx itself is NOT loaded — this world already provides its own
+// simplified `getCompById` below, and loading the real ids.jsx would shadow
+// it with one that expects the comp to be in `world.items` (it is not: only
+// footage items are). `itemByIdOrNull` (audio.jsx's footageId lookup) is
+// provided as the same minimal shim for the same reason.
 const sources = [["core.jsx", read("core.jsx")], ["footage.jsx", read("footage.jsx")], ["audio.jsx", read("audio.jsx")]];
 
 const plain = (a) => Array.prototype.slice.call(a);
@@ -290,6 +295,7 @@ function makeWorld({
       if (id !== comp.id) throw new Error(`No comp with id ${id}`);
       return comp;
     },
+    itemByIdOrNull: (id) => world.items.find((it) => it.id === id) ?? null,
   };
   vm.createContext(ctx);
   for (const [filename, src] of sources) vm.runInContext(src, ctx, { filename });

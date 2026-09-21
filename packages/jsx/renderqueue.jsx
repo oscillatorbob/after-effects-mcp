@@ -131,12 +131,9 @@ OPS.get_render_queue = noUndo(function (args) {
 });
 
 OPS.queue_comp = noUndo(function (args) {
-  // Measured live (AE 2026): itemByID throws its own cryptic internal error
-  // for a missing id ("internal verification failure, sorry! {Item Not
-  // Found}") rather than returning null, for every id tried. Normalizing
-  // both possible behaviours here rather than trusting either.
-  var comp = null;
-  try { comp = app.project.itemByID(args.compId); } catch (eLookup) { comp = null; }
+  // itemByIdOrNull (ids.jsx) normalizes AE's throw-not-null behaviour for a
+  // missing id — see its own comment for what was measured.
+  var comp = itemByIdOrNull(args.compId);
   if (!comp) throw new Error("No project item with id " + args.compId);
   if (!(comp instanceof CompItem)) {
     throw new Error("Item " + args.compId + " (\"" + comp.name + "\") is not a comp — nothing to queue.");

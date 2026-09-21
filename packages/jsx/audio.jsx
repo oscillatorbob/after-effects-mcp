@@ -376,7 +376,7 @@ function __planAudioCues(comp, args) {
     var source = null;
     var defaultName = null;
     if (hasId) {
-      var item = app.project.itemByID(cue.footageId);
+      var item = itemByIdOrNull(cue.footageId);
       if (!item) { problems.push({ cue: i, reason: "no project item with id " + cue.footageId }); continue; }
       var why = __audioItemProblem(item);
       if (why) { problems.push({ cue: i, reason: why }); continue; }

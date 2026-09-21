@@ -194,7 +194,7 @@ OPS.import_footage = function (args) {
 // and relink", which would leave transforms/effects/keyframes/parenting/expressions
 // behind on layers pointing at a now-gone item.
 OPS.replace_footage = function (args) {
-  var item = app.project.itemByID(args.itemId);
+  var item = itemByIdOrNull(args.itemId);
   if (!item) throw new Error("No project item with id " + args.itemId);
   if (item instanceof FolderItem) throw new Error("Item " + args.itemId + " (\"" + item.name + "\") is a folder, not footage — nothing to replace.");
   if (item instanceof CompItem) throw new Error("Item " + args.itemId + " (\"" + item.name + "\") is a comp, not footage — nothing to replace.");
@@ -232,7 +232,7 @@ OPS.replace_footage = function (args) {
   var usedIn = __usedInList(item);
   var layerCount = 0;
   for (var u = 0; u < usedIn.length; u++) {
-    var c = app.project.itemByID(usedIn[u].id);
+    var c = itemByIdOrNull(usedIn[u].id);
     if (!c) continue;
     for (var j = 1; j <= c.numLayers; j++) {
       var l = c.layer(j);
@@ -258,7 +258,7 @@ OPS.replace_footage = function (args) {
 
 OPS.create_footage_layer = function (args) {
   var comp = getCompById(args.compId);
-  var item = app.project.itemByID(args.itemId);
+  var item = itemByIdOrNull(args.itemId);
   if (!item) throw new Error("No project item with id " + args.itemId);
   if (item instanceof FolderItem) throw new Error("Item " + args.itemId + " (\"" + item.name + "\") is a folder, not footage");
 

@@ -135,7 +135,7 @@ function load() {
     `,
     ctx,
   );
-  for (const f of ["core.jsx", "renderqueue.jsx"]) {
+  for (const f of ["core.jsx", "ids.jsx", "renderqueue.jsx"]) {
     vm.runInContext(read(f), ctx, { filename: f });
   }
   const get = (expr) => vm.runInContext(expr, ctx);

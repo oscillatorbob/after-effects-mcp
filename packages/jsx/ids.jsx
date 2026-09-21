@@ -1,8 +1,32 @@
 // ids.jsx — stable ID lookup helpers. (compId, layerId) is the canonical pair.
 
+// app.project.itemByID(id) does not reliably return null for a missing item.
+// Measured live against real AE 2026: for every nonexistent id tried (2, 3,
+// 999, 12345, 999999, 99999999), it threw the same internal message —
+// "internal verification failure, sorry! {Item Not Found}" — and never once
+// returned null. Every caller below that wrote `if (!item) throw <friendly
+// message>` had dead code: the raw AE error reached the caller instead.
+//
+// This is the one place that distinction is made, so every caller keeps its
+// own message exactly as written — normalizing the *lookup*, not the error
+// text. The match is on the message text, the only signal AE gives: it is
+// consistent across every id this was measured against, and deliberately
+// narrow — anything that is not that exact failure is rethrown unchanged,
+// because a project-corruption or other genuine internal error must never be
+// silently read as "not found" and swallowed.
+function itemByIdOrNull(id) {
+  try {
+    return app.project.itemByID(id);
+  } catch (e) {
+    var msg = (e && e.message) ? String(e.message) : String(e);
+    if (msg.indexOf("Item Not Found") >= 0) return null;
+    throw e;
+  }
+}
+
 function getCompById(id) {
   if (id === null || id === undefined) throw new Error("compId required");
-  var item = app.project.itemByID(id);
+  var item = itemByIdOrNull(id);
   if (!item) throw new Error("No comp with id " + id);
   if (!(item instanceof CompItem)) throw new Error("Item " + id + " is not a CompItem");
   return item;
@@ -23,7 +47,7 @@ function resolveComp(args) {
 
 function getItemById(id) {
   if (id === null || id === undefined) throw new Error("itemId required");
-  var item = app.project.itemByID(id);
+  var item = itemByIdOrNull(id);
   if (!item) throw new Error("No item with id " + id);
   return item;
 }
