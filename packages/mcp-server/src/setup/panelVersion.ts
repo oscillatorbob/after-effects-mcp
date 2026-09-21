@@ -40,14 +40,30 @@ export interface PanelAssessment {
   message: string;
 }
 
-let cachedSourceHash: string | null | undefined;
-
-/** Hash of the bundle this server would install. Cached: it cannot change at runtime. */
-export function sourceBundleHash(): string | null {
-  if (cachedSourceHash !== undefined) return cachedSourceHash;
+/**
+ * Hash of the bundle this server would install — read fresh every call, not
+ * cached. It used to be: a production install's bundle genuinely never
+ * changes while the process runs, so memoizing looked free. In development it
+ * is not free, it is wrong — `npm run build` rewrites bundle.jsx while the
+ * long-lived `after-effects-dev` MCP server process stays connected, and a
+ * cached hash from before that build makes `assessPanel()` compare the
+ * panel's (correctly updated) live hash against a value that no longer
+ * describes anything on disk. Measured: every branch fell through to
+ * "the panel is out of date" even though the panel, the CEP install and the
+ * source bundle all already agreed with each other — only the server's own
+ * memory disagreed, and nothing short of restarting the server process could
+ * clear it. There is no call-frequency cost to dropping the cache: this is
+ * gated by `createPanelGate`'s own 60s throttle in server.ts plus the
+ * occasional explicit `check_setup`/`setup_panel`, so it runs at most about
+ * once a minute — the same frequency `installedBundleHash` below has always
+ * hashed at, uncached.
+ *
+ * `bundlePath` overrides the resolved location; only a test passes it.
+ */
+export function sourceBundleHash(bundlePath?: string): string | null {
+  if (bundlePath) return hashFile(bundlePath);
   const source = panelSourceDir();
-  cachedSourceHash = source ? hashFile(path.join(source, "jsx", "bundle.jsx")) : null;
-  return cachedSourceHash;
+  return source ? hashFile(path.join(source, "jsx", "bundle.jsx")) : null;
 }
 
 /** Hash of the bundle sitting in the CEP extension folder, i.e. what AE loads next launch. */

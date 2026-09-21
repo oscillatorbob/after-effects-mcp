@@ -4,9 +4,22 @@
 // a user, and three of the four are only reachable during an upgrade — which is
 // exactly when nobody is running the manual verification recipes.
 //
+// `sourceBundleHash()` used to memoize its result for the life of the process —
+// fine for a production install, wrong for development, where `npm run build`
+// rewrites bundle.jsx while the long-lived `after-effects-dev` MCP server stays
+// connected. Measured live: every check fell through to "the panel is out of
+// date" even though the panel, the CEP install and the source bundle on disk
+// all already agreed — only the server's cached memory of an earlier build
+// disagreed, and nothing short of restarting the server process cleared it.
+// The regression test below mutates a real file on disk and calls the loaded
+// function again in the same process, which is the one thing re-importing the
+// module between calls cannot prove.
+//
 //   node tests/unit/panel-version.mjs
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -82,5 +95,58 @@ assert.match(unknown, /get_house_style/);
 assert.match(unknown, /older than these tools/);
 assert.match(unknown, /setup_panel/);
 passed++;
+
+// ---------------------------------------------------------------------------
+// Regression: sourceBundleHash() must reflect a rebuild without a process
+// restart. `bundlePath` is a test-only override — every real caller still
+// resolves the path itself and gets this same, now-uncached, behaviour.
+// ---------------------------------------------------------------------------
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ae-mcp-bundle-hash-"));
+const tmpBundle = path.join(tmpDir, "bundle.jsx");
+
+try {
+  // 1. First call computes the current hash of whatever is on disk right now.
+  fs.writeFileSync(tmpBundle, "// build A\nvar OPS = OPS || {};\n");
+  const hashA1 = sourceBundleHash(tmpBundle);
+  assert.ok(hashA1, "a real file must hash to something");
+  passed++;
+
+  // 2. A repeated call against an unchanged file returns the same value —
+  // dropping the cache must not mean the hash becomes unstable or random.
+  const hashA2 = sourceBundleHash(tmpBundle);
+  check("unchanged bundle hashes identically on a second call", hashA2, hashA1);
+
+  // 3 & 4. The critical case: mutate the file — simulating `npm run build`
+  // rewriting bundle.jsx — while this same module instance, in this same
+  // process, is still loaded. No re-import, no process restart. The very next
+  // call must see the new content, which is exactly what stayed broken with
+  // the old memoized version (it would have kept returning hashA1 forever).
+  fs.writeFileSync(tmpBundle, "// build B — a real rebuild changed this file\nvar OPS = OPS || {};\n");
+  const hashB = sourceBundleHash(tmpBundle);
+  assert.notEqual(hashB, hashA1, "a rebuilt file in the same process must hash differently, with no restart");
+  passed++;
+
+  // assessPanel() only ever compares against sourceBundleHash()'s *default*
+  // path (the real shipped bundle) — it has no path parameter of its own, and
+  // adding one is out of scope here. What matters is that assessPanel calls
+  // the now-uncached sourceBundleHash() internally, so the decision-table
+  // block above — built on SHIPPED, itself fetched through this same
+  // function — already exercises assessPanel against a freshly-read value on
+  // every run of this file, not a value memoized from some earlier call.
+
+  // 5. Missing-bundle behaviour is unchanged: a path that never existed hashes
+  // to null, exactly as hashFile's try/catch always returned for the default
+  // path resolution — this was never about the caching, only about I/O.
+  const missingPath = path.join(tmpDir, "does-not-exist.jsx");
+  check("a missing bundle still hashes to null", sourceBundleHash(missingPath), null);
+} finally {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+}
+
+// 6. The default (no override) path still resolves and matches what the
+// build actually produced — the decision table above already exercises every
+// branch of assessPanel against it, so this just confirms the no-argument
+// call path itself is untouched by adding the parameter.
+check("sourceBundleHash() with no argument still resolves the real shipped bundle", sourceBundleHash(), SHIPPED);
 
 console.log(`panel-version: ${passed} assertions passed`);
