@@ -220,6 +220,14 @@ jobs:
       - name: replace_footage preserves layer references and rejects unsafe targets
         run: node tests/unit/replace-footage.mjs
 
+      # Render Queue Phase 1: inspect and enqueue, never render. Render-queue
+      # items have no id and no working index — queueIndex is current
+      # position, proven to shift when an earlier item is removed — and
+      # AE silently rewrites an output module's file extension to match its
+      # active template, so the response reports the readback, never an echo.
+      - name: get_render_queue / queue_comp never render and report AE's readback
+        run: node tests/unit/render-queue.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.

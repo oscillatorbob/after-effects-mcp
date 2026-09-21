@@ -1021,6 +1021,17 @@ export const ReplaceFootage = z
   })
   .strict();
 
+// ---------- render queue (Phase 1: inspect and enqueue, never render) ----------
+export const GetRenderQueue = z.object({}).strict();
+export const QueueComp = z
+  .object({
+    compId: z.number().describe("The comp to add to the Render Queue."),
+    outputPath: z.string().min(1).optional().describe(
+      "Absolute path for Output Module 1's file. Its parent directory must already exist — nothing is created — and After Effects may silently change the extension to match the active output-module template; the result's `outputs[]` reports what AE actually set, not an echo of this value. Omit to leave the output module at whatever this AE session last used, which is inherited, not blank."
+    ),
+  })
+  .strict();
+
 // ---------- audio ----------
 export const AudioCue = z
   .object({
@@ -1309,6 +1320,9 @@ export const OpSchemas = {
   create_footage_layer: CreateFootageLayer,
   purge_unused_footage: PurgeUnusedFootage,
   replace_footage: ReplaceFootage,
+  // render queue
+  get_render_queue: GetRenderQueue,
+  queue_comp: QueueComp,
   // audio
   place_audio_cues: PlaceAudioCues,
   // motion graphics templates
@@ -1451,6 +1465,13 @@ export const OpMutation = {
   // real one interleaving with it costs the batch's undo step.
   purge_unused_footage: "write",
   replace_footage: "write",
+  // render queue — Phase 1: inspect and enqueue. Render Queue state is not
+  // part of AE's Undo stack (see renderqueue.jsx), so both use noUndo() at
+  // the JSX layer; that is orthogonal to this table, which is about the
+  // server's write queue, not Undo. queue_comp still mutates AE state and
+  // must serialize behind other writes.
+  get_render_queue: "read",
+  queue_comp: "write",
   // audio cues — imports footage and adds layers.
   place_audio_cues: "write",
   // motion graphics templates — saves the project before exporting.

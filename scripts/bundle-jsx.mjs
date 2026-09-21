@@ -28,6 +28,7 @@ const order = [
   "markers.jsx",
   "vision.jsx",
   "footage.jsx",
+  "renderqueue.jsx",
   "audio.jsx",
   "mogrt.jsx",
   "style.jsx",
