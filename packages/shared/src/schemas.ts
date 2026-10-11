@@ -1073,6 +1073,66 @@ export const InspectPropertyTree = z
   })
   .strict();
 
+// ---------- property values (static write) ----------
+/**
+ * The static-write counterpart to inspect_property_tree: a path that tool
+ * returns is accepted here unchanged. Static only — no `time`, no keys, no
+ * interpolation; a property that already has keys is refused rather than
+ * flattened (B2's set_keyframes owns animation).
+ *
+ * The value shapes mirror what inspect_property_tree reports, so a value read
+ * there can be edited and written back: a number, an array of numbers, or a
+ * Shape as {vertices, inTangents, outTangents, closed[, feather]}. Which one a
+ * property takes is decided by its valueType inside After Effects, where every
+ * update is checked before the first write (packages/jsx/propwrite.jsx).
+ */
+export const SET_PROPERTY_VALUES_MAX = 50;
+const ShapePoint = z.tuple([z.number(), z.number()]);
+export const ShapeFeatherValue = z
+  .object({
+    segLocs: z.array(z.number().int().min(0)),
+    relSegLocs: z.array(z.number().min(0).max(1)),
+    radii: z.array(z.number()),
+    types: z.array(z.number().int()),
+    interps: z.array(z.number().int()),
+    tensions: z.array(z.number()),
+    relCornerAngles: z.array(z.number()),
+  })
+  .strict()
+  .describe("A mask's variable-width feather points, exactly as inspect_property_tree reports them: seven arrays of one length. Empty arrays remove every feather point. Omit `feather` to keep the mask's existing points.");
+export const ShapePathValue = z
+  .object({
+    vertices: z.array(ShapePoint).min(1),
+    inTangents: z.array(ShapePoint),
+    outTangents: z.array(ShapePoint),
+    closed: z.boolean(),
+    feather: ShapeFeatherValue.optional(),
+  })
+  .strict()
+  .describe("A SHAPE value (mask path or shape-layer path), as inspect_property_tree reports it. Tangents are relative to their vertex, one per vertex.");
+export const StaticPropertyValue = z
+  .union([z.number(), z.array(z.number()).min(2).max(4), ShapePathValue])
+  .describe("A number (OneD, LAYER_INDEX, MASK_INDEX), an array of exactly the property's dimension count (TwoD 2, ThreeD 3 — a 2D layer's Position/Scale/Anchor Point still read and take 3; COLOR 4, or 3 to keep the current alpha), or a Shape object.");
+export const SetPropertyValues = z
+  .object({
+    compId: z.number(),
+    layerId: z.number(),
+    updates: z
+      .array(
+        z
+          .object({
+            path: PropertyPath
+              .describe("The property's path exactly as inspect_property_tree returned it (matchNames, display names or 1-based indices). Must end at a property, not a group."),
+            value: StaticPropertyValue,
+          })
+          .strict()
+      )
+      .min(1)
+      .max(SET_PROPERTY_VALUES_MAX)
+      .describe(`1 to ${SET_PROPERTY_VALUES_MAX} static writes on this layer, applied in order. Every one is checked before the first is written; two that resolve to the same property are refused.`),
+  })
+  .strict();
+
 // ---------- raw ----------
 export const RunJsx = crossField(
   z.object({
@@ -1434,6 +1494,7 @@ export const OpSchemas = {
   get_project_summary: GetProjectSummary,
   find_layers: FindLayers,
   inspect_property_tree: InspectPropertyTree,
+  set_property_values: SetPropertyValues,
   // footage
   import_footage: ImportFootage,
   create_footage_layer: CreateFootageLayer,
@@ -1578,6 +1639,9 @@ export const OpMutation = {
   find_layers: "read",
   // Never writes and never opens an undo group (noUndo in inspect.jsx).
   inspect_property_tree: "read",
+  // The static-write counterpart: one undo group per call, every update
+  // checked before the first write (propwrite.jsx).
+  set_property_values: "write",
   // footage
   import_footage: "write",
   create_footage_layer: "write",

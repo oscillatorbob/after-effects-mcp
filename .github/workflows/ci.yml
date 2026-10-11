@@ -258,6 +258,12 @@ jobs:
       - name: inspect_property_tree reads any property tree, bounded and read-only
         run: node tests/unit/inspect-property-tree.mjs
 
+      # Its static-write counterpart, against a writable mock of the measured
+      # model: every update checked before the first write, each write read
+      # back, a failure rolled back and reported, keys never removed.
+      - name: set_property_values writes static values, verified and all-or-nothing
+        run: node tests/unit/set-property-values.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.
