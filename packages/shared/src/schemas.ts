@@ -1032,6 +1032,47 @@ export const FindLayers = z.object({
     ),
 });
 
+// ---------- property tree (read-only) ----------
+/**
+ * The generic walk of a layer's property tree, for everything get_layer_full
+ * has no section for. Bounded three ways — depth, node count, keys per
+ * property — and every bound that bites is reported, never applied silently.
+ * The defaults come from live measurement on AE 26.5: a solid with ten effects
+ * is ~390 nodes and a text layer with one animator ~290, most of it the Layer
+ * Styles / Material Options groups that are collapsed by default.
+ */
+export const INSPECT_DEFAULT_COLLAPSE = [
+  "ADBE Layer Styles",
+  "ADBE Material Options Group",
+  "ADBE Extrsn Options Group",
+  "ADBE Plane Options Group",
+  "ADBE Vector Materials Group",
+] as const;
+export const InspectPropertyTree = z
+  .object({
+    compId: z.number(),
+    layerId: z.number(),
+    path: PropertyPath.optional()
+      .describe("Start the walk at this property or group instead of the layer root. Same format every path-taking tool uses — matchNames, display names or 1-based indices — and exactly what each returned node's `path` already is."),
+    depth: z.number().int().min(0).max(12).default(4)
+      .describe("Levels below the start node to expand. Groups at the limit are listed with childCount and childrenNotWalked:true. Text animator properties sit at depth 5 from the layer root; shape contents can reach 7."),
+    maxNodes: z.number().int().min(1).max(2000).default(250)
+      .describe("Stop after this many nodes and say where (truncated:true, truncation.nextUnvisited)."),
+    includeValues: z.boolean().default(true)
+      .describe("Read each property's current value. Unreadable ones are still listed, with valueReadable:false and the reason."),
+    includeExpressions: z.boolean().default(true)
+      .describe("Report expression text, enabled state and AE's expressionError on properties that have one."),
+    includeKeys: z.boolean().default(false)
+      .describe("List each animated property's keyframes: time, value, interpolation, per-dimension temporal ease, continuous/auto-bezier flags, spatial tangents and roving where spatial, label."),
+    maxKeysPerProperty: z.number().int().min(1).max(500).default(10)
+      .describe("With includeKeys, keep the first and last few of this many keys per property and count the rest."),
+    includeHidden: z.boolean().default(true)
+      .describe("List properties flagged hidden:true — slots After Effects refuses a value in, in the layer's current state (the ~100 inert slots of a text animator's Properties group, a 2D layer's Orientation). false leaves them out and counts them in hiddenOmitted."),
+    collapse: z.array(z.string()).optional()
+      .describe(`Group matchNames to list without expanding. Default: ${INSPECT_DEFAULT_COLLAPSE.join(", ")} — present on every layer, large, and usually inert. Pass [] to expand everything; a collapsed group can always be inspected directly with \`path\`.`),
+  })
+  .strict();
+
 // ---------- raw ----------
 export const RunJsx = crossField(
   z.object({
@@ -1392,6 +1433,7 @@ export const OpSchemas = {
   // explore
   get_project_summary: GetProjectSummary,
   find_layers: FindLayers,
+  inspect_property_tree: InspectPropertyTree,
   // footage
   import_footage: ImportFootage,
   create_footage_layer: CreateFootageLayer,
@@ -1534,6 +1576,8 @@ export const OpMutation = {
   // explore
   get_project_summary: "read",
   find_layers: "read",
+  // Never writes and never opens an undo group (noUndo in inspect.jsx).
+  inspect_property_tree: "read",
   // footage
   import_footage: "write",
   create_footage_layer: "write",

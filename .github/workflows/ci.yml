@@ -251,6 +251,13 @@ jobs:
       - name: write handlers refuse rather than silently skip
         run: node tests/unit/silent-writes.mjs
 
+      # The generic property walker against a mock of the measured AE property
+      # model: unreadable values reported rather than dropped, duplicate
+      # matchNames addressed by index, every bound reported, and no setter on
+      # the mock ever called.
+      - name: inspect_property_tree reads any property tree, bounded and read-only
+        run: node tests/unit/inspect-property-tree.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.
