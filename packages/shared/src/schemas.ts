@@ -1133,6 +1133,80 @@ export const SetPropertyValues = z
   })
   .strict();
 
+// ---------- keyframes (bulk) ----------
+/**
+ * The animated counterpart to set_property_values: many properties, on many
+ * layers, keyed in one call, every key checked before the first is written and
+ * every track read back (packages/jsx/keywrite.jsx). A path inspect_property_tree
+ * returns is accepted unchanged.
+ *
+ * Times: each key carries exactly one of `frame` (a whole comp frame, converted
+ * with the comp's own frameDuration — 23.976 lands exactly) or `time` (comp
+ * seconds). One request uses one of the two; mixing them is refused in JSX,
+ * since a rule across array elements is not one `crossField` can declare.
+ *
+ * The per-call limits on tracks and keys per track are here; the total across
+ * tracks is checked in JSX (SET_KEYFRAMES_MAX_TOTAL_KEYS), for the same reason.
+ */
+export const SET_KEYFRAMES_MAX_TRACKS = 100;
+export const SET_KEYFRAMES_MAX_KEYS_PER_TRACK = 5000;
+export const SET_KEYFRAMES_MAX_TOTAL_KEYS = 10000;
+const KeyEase = z
+  .object({
+    speed: z.number().describe("Speed in the property's units per second."),
+    influence: z.number().min(0.1).max(100).describe("Percent, 0.1 to 100 (After Effects refuses anything else)."),
+  })
+  .strict();
+const KEY_INTERPOLATION = z.enum(["linear", "bezier", "hold"]);
+export const KeyframeSpec = crossField(
+  z
+    .object({
+      frame: z.number().int().optional().describe("Comp frame, counted from the comp's first frame (time 0). Converted with the comp's frameDuration, so 23.976 and 29.97 land exactly on the frame."),
+      time: z.number().optional().describe("Comp time in seconds. Kept exactly as given, fractional frames included."),
+      value: StaticPropertyValue.describe("The key's value, in inspect_property_tree's shape: a number, an array of exactly the property's dimension count (COLOR takes all four, [r,g,b,a]), or a Shape."),
+      interpolation: z
+        .object({ in: KEY_INTERPOLATION, out: KEY_INTERPOLATION })
+        .strict()
+        .optional()
+        .describe("Temporal interpolation of each side. Omitted: a side given an ease, or a continuous/auto-Bezier key, is bezier; otherwise linear on a new key and unchanged on a key a merge updates."),
+      easeIn: z.array(KeyEase).min(1).max(3).optional().describe("Incoming temporal ease, one {speed, influence} per temporal dimension: 2 on TwoD, 3 on ThreeD (Scale), 1 on everything else — spatial Position, colours and Shapes included. Needs a bezier in-side."),
+      easeOut: z.array(KeyEase).min(1).max(3).optional().describe("Outgoing temporal ease, same shape as easeIn. Needs a bezier out-side."),
+      temporalContinuous: z.boolean().optional().describe("One speed through the key. Needs bezier on both sides; with an ease, easeIn and easeOut speeds must match."),
+      temporalAutoBezier: z.boolean().optional().describe("After Effects computes the ease (and the key is continuous). Cannot be combined with easeIn/easeOut."),
+      spatialTangents: z
+        .object({ in: z.array(z.number()).min(2).max(3), out: z.array(z.number()).min(2).max(3) })
+        .strict()
+        .optional()
+        .describe("Motion-path tangents, relative to the key: 3 numbers on ThreeD_SPATIAL (also on a 2D layer, Z 0), 2 on TwoD_SPATIAL. Spatial properties only, never Orientation."),
+      spatialContinuous: z.boolean().optional().describe("Spatial properties only. Omitted: true on a new key (AE's own fresh-key state), unchanged on a key a merge updates."),
+      spatialAutoBezier: z.boolean().optional().describe("After Effects computes the tangents. Cannot be combined with spatialTangents. Spatial properties only. Omitted: false on a new key, unchanged on a key a merge updates."),
+      label: z.number().int().min(0).max(16).optional().describe("Key label colour, 0 (none) to 16."),
+    })
+    .strict(),
+  { kind: "exactlyOne", fields: ["frame", "time"], then: "Use `frame` (whole comp frames) or `time` (seconds) — and the same one for every key in the request." }
+);
+export const SetKeyframes = z
+  .object({
+    compId: z.number(),
+    tracks: z
+      .array(
+        z
+          .object({
+            layerId: z.number(),
+            path: PropertyPath.describe("The property's path exactly as inspect_property_tree returned it. Must end at a property, not a group."),
+            mode: z
+              .enum(["merge", "replace"])
+              .describe("merge: the given keys are added, or update the key already at that time; every other key stays. replace: the given keys become the property's whole animation; keys at other times are removed."),
+            keys: z.array(KeyframeSpec).min(1).max(SET_KEYFRAMES_MAX_KEYS_PER_TRACK),
+          })
+          .strict()
+      )
+      .min(1)
+      .max(SET_KEYFRAMES_MAX_TRACKS)
+      .describe(`1 to ${SET_KEYFRAMES_MAX_TRACKS} tracks — one property each, on any layers of the comp; at most ${SET_KEYFRAMES_MAX_TOTAL_KEYS} keys in all. Two tracks may not reach the same property.`),
+  })
+  .strict();
+
 // ---------- raw ----------
 export const RunJsx = crossField(
   z.object({
@@ -1495,6 +1569,7 @@ export const OpSchemas = {
   find_layers: FindLayers,
   inspect_property_tree: InspectPropertyTree,
   set_property_values: SetPropertyValues,
+  set_keyframes: SetKeyframes,
   // footage
   import_footage: ImportFootage,
   create_footage_layer: CreateFootageLayer,
@@ -1642,6 +1717,9 @@ export const OpMutation = {
   // The static-write counterpart: one undo group per call, every update
   // checked before the first write (propwrite.jsx).
   set_property_values: "write",
+  // Bulk animation: one undo group per call, every track checked before the
+  // first key is written, a failure rolled back inside that group (keywrite.jsx).
+  set_keyframes: "write",
   // footage
   import_footage: "write",
   create_footage_layer: "write",

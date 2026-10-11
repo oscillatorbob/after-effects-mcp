@@ -207,6 +207,23 @@ function __pwBuildShape(p, current, v) {
   return { shape: s };
 }
 
+// Why After Effects would refuse a value on `p` (the measured `hidden` rule),
+// or null. Shared with set_keyframes (keywrite.jsx), which hits the same rule
+// on setValueAtTime; only the Time Remap wording differs between the two.
+function __pwHiddenReason(l, p, vt, timeRemapWhy) {
+  var hidden = false;
+  try { hidden = __IT_HIDDEN_MEASURED[vt] && !p.canSetExpression && p.canVaryOverTime; } catch (eH) { hidden = false; }
+  if (!hidden) return null;
+  var why = "After Effects refuses a value there in the layer's current state (hidden)";
+  try {
+    if (p.dimensionsSeparated) why = "its dimensions are separated, so it takes no value as a whole — write its X/Y/Z followers (e.g. ADBE Position_0) instead";
+    else if (p.isSeparationFollower) why = "its leader's dimensions are not separated — write the leader (e.g. ADBE Position) instead";
+    else if (p.matchName === "ADBE Time Remapping") why = timeRemapWhy;
+    else if (!__layerIs3D(l) && __pwTopGroup(p) === "ADBE Transform Group") why = "the layer is 2D — this property needs threeDLayer:true";
+  } catch (eY) {}
+  return why;
+}
+
 // Check one update and decide what to write. Returns {problem} or a plan
 // entry. Nothing here writes.
 function __pwPlan(c, l, u) {
@@ -235,18 +252,8 @@ function __pwPlan(c, l, u) {
     return { problem: label + " is on an ambient light, whose Transform takes no values (it reports canSetExpression on X/Y Rotation and still refuses)" };
   }
 
-  var hidden = false;
-  try { hidden = __IT_HIDDEN_MEASURED[vt] && !p.canSetExpression && p.canVaryOverTime; } catch (eH) { hidden = false; }
-  if (hidden) {
-    var why = "After Effects refuses a value there in the layer's current state (hidden)";
-    try {
-      if (p.dimensionsSeparated) why = "its dimensions are separated, so it takes no value as a whole — write its X/Y/Z followers (e.g. ADBE Position_0) instead";
-      else if (p.isSeparationFollower) why = "its leader's dimensions are not separated — write the leader (e.g. ADBE Position) instead";
-      else if (p.matchName === "ADBE Time Remapping") why = "Time Remap is off on this layer (and once on, it is keyed, which this static tool refuses too)";
-      else if (!__layerIs3D(l) && __pwTopGroup(p) === "ADBE Transform Group") why = "the layer is 2D — this property needs threeDLayer:true";
-    } catch (eY) {}
-    return { problem: label + ": " + why };
-  }
+  var why = __pwHiddenReason(l, p, vt, "Time Remap is off on this layer (and once on, it is keyed, which this static tool refuses too)");
+  if (why) return { problem: label + ": " + why };
 
   var exprOn = __pwExpressionOn(p);
   var t = c.time;

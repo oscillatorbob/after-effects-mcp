@@ -25,11 +25,14 @@ const DEFAULT_OP_TIMEOUT_MS = 120_000;
  * import dozens of files and build a layer for each, all synchronously.
  * `purge_unused_footage` because its duration is chosen by the project: one
  * `usedIn` per footage item, over a bin that reached 1,863 orphaned solids
- * before the op existed (issue #83).
+ * before the op existed (issue #83). `set_keyframes` because the caller
+ * chooses the payload: 10,000 new keys measured 6 s, but replacing a long
+ * existing animation pays AE's per-key removeKey and metadata setters, which
+ * grow with the property's length.
  */
 const SLOW_OPS = new Set([
   "run_batch", "run_jsx", "screenshot_frame", "screenshot_layer", "export_mogrt",
-  "import_footage", "place_audio_cues", "purge_unused_footage",
+  "import_footage", "place_audio_cues", "purge_unused_footage", "set_keyframes",
 ]);
 const SLOW_OP_TIMEOUT_MS = 300_000;
 

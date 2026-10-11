@@ -264,6 +264,14 @@ jobs:
       - name: set_property_values writes static values, verified and all-or-nothing
         run: node tests/unit/set-property-values.mjs
 
+      # Bulk keyframes against a keyframe-capable mock of the measured model:
+      # every track and key checked before the first write, every track read
+      # back, a failure rolled back across layers, and the mask-count rule that
+      # keeps AE's modal "Preserve Constant Vertex and Feather Count" warning
+      # from blocking the bridge.
+      - name: set_keyframes animates in bulk, verified and all-or-nothing
+        run: node tests/unit/set-keyframes.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.

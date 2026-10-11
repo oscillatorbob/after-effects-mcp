@@ -16,6 +16,19 @@ description: Keyframes, easing, rigging and expressions through the AE MCP tools
 - `get_keyframes` reads them all back, with the ease on each key — the exact
   answer to "does it move right", where a screenshot is an impression.
 
+**More than a handful of keys is one `set_keyframes` call, not many
+`add_keyframe` calls.** It keys any properties on any layers of a comp at once —
+a camera's Position, Orientation, rotations and Zoom over frames 150–240 is one
+call — at the paths `inspect_property_tree` returns, with interpolation, ease,
+flags and spatial tangents per key. Give times as whole `frame`s: they are
+converted with the comp's own frame duration, so 23.976 lands exactly on the
+frame. `merge` adds or updates keys and leaves the rest; `replace` makes the
+given keys the whole animation. Every key is checked before anything is
+written, so a refusal changed nothing. Read the result back with
+`inspect_property_tree({includeKeys: true})`. On a mask path every key must keep
+the mask's vertex and feather-point counts — set the path statically first if
+they need to change.
+
 **Pass one `{influence, speed}` pair per side and nothing else.**
 `set_temporal_ease` and `add_keyframe` size the ease array for the property
 themselves and report the count that worked as `easeDimensions`. That number is

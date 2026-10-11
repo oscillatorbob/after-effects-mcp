@@ -280,17 +280,16 @@ check("the JSON Schema form and the zod form agree on every combination", () => 
   // advertise a call the server accepts as illegal; one that is looser is the
   // status quo this change exists to end.
   //
-  // Only root-level rules can be probed this way — an argument object is what
-  // a validator is handed — which is every rule that exists today. A rule
-  // nested inside an array would need its own probe and the assertion below
-  // makes that a failure rather than an omission.
-  const nested = rules.filter((r) => r.path.length > 0);
-  assert.deepEqual(
-    nested.map((r) => `${r.op}:${r.path.join(".")}`),
-    [],
-    "A cross-field rule now sits below the root and this probe cannot reach it. Extend the " +
-      "probe to build a payload around it; do not narrow the check."
-  );
+  // A validator is handed the whole argument object, so a rule nested inside
+  // arrays (set_keyframes' frame/time on each key, at tracks.[].keys.[]) is
+  // probed by building a valid payload around it and varying only the object
+  // the rule sits on. Every step of a rule's path must be an object property or
+  // an array element; anything else fails here rather than being skipped.
+  for (const r of rules) {
+    for (const step of r.path) {
+      assert.ok(typeof step === "string", `${r.op}: rule path ${JSON.stringify(r.path)} has a step this probe cannot build`);
+    }
+  }
 
   /** A value the schema will accept for a field, so only the rule is under test. */
   const sampleFor = (op, node) => {
@@ -332,37 +331,55 @@ check("the JSON Schema form and the zod form agree on every combination", () => 
     }
   };
 
-  for (const { op, rule } of rules) {
+  for (const { op, path: rulePath, rule } of rules) {
     const schema = emitted.get(op);
     const validate = new Ajv2020({ strict: false }).compile(schema);
     const zodSchema = OpSchemas[op];
+    // The object the rule constrains: the arguments themselves, or a node below.
+    const node = nodeAt(schema, rulePath);
+    const samePath = (p) => JSON.stringify(p) === JSON.stringify(rulePath);
 
-    // Everything the schema requires that is not part of the rule, so the only
+    // Everything the node requires that is not part of the rule, so the only
     // thing varying between probes is the rule's own fields.
     const base = {};
-    for (const key of schema.required ?? []) {
+    for (const key of node.required ?? []) {
       if (rule.fields.includes(key)) continue;
-      base[key] = sampleFor(op, schema.properties[key]);
+      base[key] = sampleFor(op, node.properties[key]);
     }
     // An op can carry more than one rule (set_effect_param: atLeastOne over
     // its param names, requiresFlag over time/keyframe). Satisfy every OTHER
-    // rule with the fewest fields, so the one under test is the only variable.
+    // rule on the same object with the fewest fields, so the one under test is
+    // the only variable.
     for (const other of rules) {
-      if (other.op !== op || other.rule === rule) continue;
+      if (other.op !== op || other.rule === rule || !samePath(other.path)) continue;
       if (other.rule.kind === "exactlyOne" || other.rule.kind === "atLeastOne") {
         const f = other.rule.fields.find((x) => !rule.fields.includes(x));
-        base[f] = sampleFor(op, schema.properties[f]);
+        base[f] = sampleFor(op, node.properties[f]);
       }
     }
+    // A nested rule's object is placed inside an otherwise valid payload: the
+    // root's required fields sampled, arrays one element long, and the rule's
+    // object as the first element at its path.
+    const wrap = (inner) => {
+      if (rulePath.length === 0) return inner;
+      const outer = sampleFor(op, schema);
+      let cur = outer;
+      for (const step of rulePath.slice(0, -1)) cur = step === ARRAY_ELEMENT ? cur[0] : cur[step];
+      const last = rulePath[rulePath.length - 1];
+      if (last === ARRAY_ELEMENT) cur[0] = inner;
+      else cur[last] = inner;
+      return outer;
+    };
 
     for (let mask = 0; mask < 1 << rule.fields.length; mask++) {
-      const payload = { ...base };
+      const inner = { ...base };
       const present = [];
       rule.fields.forEach((field, i) => {
         if (!(mask & (1 << i))) return;
-        payload[field] = sampleFor(op, schema.properties[field]);
+        inner[field] = sampleFor(op, node.properties[field]);
         present.push(field);
       });
+      const payload = wrap(inner);
 
       const bySchema = validate(payload);
       const byZod = zodSchema.safeParse(payload).success;
@@ -380,7 +397,7 @@ check("the JSON Schema form and the zod form agree on every combination", () => 
       // And the rule is the *reason*, not a coincidence of some other keyword.
       assert.equal(
         byZod,
-        crossFieldSatisfied(rule, payload),
+        crossFieldSatisfied(rule, inner),
         `${op}: zod's verdict on {${present.join(", ")}} does not match the declared rule`
       );
     }
