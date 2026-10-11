@@ -52,6 +52,7 @@ bounded form is the one to reach for:
 | Question | Call |
 |---|---|
 | What is in this project? | `get_project_summary` |
+| How is the Project panel organised? | `get_project_tree` — folders and items with ids, `parentFolderId`, `pathIds`; names repeat, so act on ids. Before deleting anything, `analyze_project_item_deletion`: After Effects deletes without asking and takes layers and Render Queue items with it |
 | What comps exist? | `list_comps({include: []})` — ids and names |
 | What is in this comp? | `list_layers({compId, include: []})` — id, index, name, type; `get_comp_tree` for the nesting |
 | Where is a layer, by name, type or effect? | `find_layers` — `{matches, count, compsSearched, included}`; a match is id, index, name, sourceType, compId and compName, and `include` (`flags`, `timing`, `parent` — the `list_layers` names) widens it. Unlike `list_layers`, omitting `include` here does **not** return everything |

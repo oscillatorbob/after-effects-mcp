@@ -37,6 +37,7 @@ const order = [
   "inspect.jsx",
   "propwrite.jsx",
   "keywrite.jsx",
+  "project.jsx",
   "helpers.jsx",
   "raw.jsx",
 ];

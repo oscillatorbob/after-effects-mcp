@@ -302,7 +302,8 @@ function __folderArg(id) {
   if (!(f instanceof FolderItem)) {
     throw new Error(
       "folderId " + id + ' ("' + f.name + '") is a ' + __itemKind(f) +
-      ", not a project folder. Pass the id of a folder from get_project_summary, or omit folderId."
+      ", not a project folder. Pass the id of a folder from get_project_tree" +
+      " (0 for the project root where the tool takes one), or omit folderId where it is optional."
     );
   }
   return f;

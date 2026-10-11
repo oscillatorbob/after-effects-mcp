@@ -467,15 +467,12 @@ OPS.get_layer_full = noUndo(function (args) {
 // "folder" (issues #21/#22). tests/unit/jsx-ternary.mjs keeps it that way.
 // "solid" mirrors __layerKind in layers.jsx so an item and a layer that share a
 // source describe it with the same word.
+// Solid detection is __isSolidItem's (footage.jsx) — one test, `mainSource
+// instanceof SolidSource`, for every op that classifies an item.
 function __itemKind(it) {
   if (it instanceof CompItem) return "comp";
   if (it instanceof FolderItem) return "folder";
-  if (it instanceof FootageItem) {
-    try {
-      if (it.mainSource && it.mainSource.color !== undefined) return "solid";
-    } catch (e) {}
-    return "footage";
-  }
+  if (it instanceof FootageItem) return __isSolidItem(it) ? "solid" : "footage";
   return "unknown";
 }
 

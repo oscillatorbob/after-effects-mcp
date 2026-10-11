@@ -17,7 +17,7 @@ session is a tax on every request the user ever makes.
 | [`docs/fragile-areas-ae.md`](docs/fragile-areas-ae.md) | Measured After Effects and ExtendScript behaviour: undo, shapes, text, audio, mogrt, expressions, `run_jsx`. |
 | [`docs/fragile-areas-bridge.md`](docs/fragile-areas-bridge.md) | The bridge, ports, CEP, the panel, and the screenshot pipeline. |
 | [`docs/fragile-areas-server.md`](docs/fragile-areas-server.md) | Tool schemas and the MCP protocol, the journal's caches, packaging and binaries. |
-| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 52 recipes run by hand against a live AE 2026. |
+| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 53 recipes run by hand against a live AE 2026. |
 
 **Nothing in `docs/` is generated** — hand-written, like this file. The generated
 prose is elsewhere and is called out below.
@@ -33,7 +33,7 @@ table is how that one went stale once already.
 
 ## What this project is
 
-An MCP server that lets an LLM drive Adobe After Effects 2026: comps, layers, transforms, keyframes (with full interpolation/easing/tangent control), expressions, effects, text, shapes, masks, markers, footage import, audio cue placement, comp snapshots and diffs, Motion Graphics template export, one-off screenshots and contact sheets, bulk batches. 76 tools. macOS and Windows — the only two platforms AE runs on.
+An MCP server that lets an LLM drive Adobe After Effects 2026: comps, layers, transforms, keyframes (with full interpolation/easing/tangent control), expressions, effects, text, shapes, masks, markers, footage import, audio cue placement, comp snapshots and diffs, Motion Graphics template export, one-off screenshots and contact sheets, bulk batches, Project panel folders and safe deletion. 90 tools. macOS and Windows — the only two platforms AE runs on.
 
 It ships five ways, and the ordering below is deliberate — it goes from least to most that the user has to already have installed:
 
@@ -83,6 +83,7 @@ One line each. The annotated version — why each file is the way it is — is i
 | `packages/jsx/propwrite.jsx` | `set_property_values` — static writes at the paths `inspect_property_tree` returns. Every update checked before the first write, each read back, a failure rolled back by value. Never removes keys. |
 | `packages/jsx/keywrite.jsx` | `set_keyframes` — bulk keyframes on many properties and layers in one call, at the paths `inspect_property_tree` returns. Every track and key checked before the first write, every track read back, a failure rolled back across tracks by value. Frames convert with the comp's `frameDuration`; mask paths keep their vertex/feather counts (AE's modal warning). |
 | `packages/jsx/snapshot.jsx` | The comp fingerprint and the diff of two of them. Pure, so testable with no AE. |
+| `packages/jsx/project.jsx` | The Project panel hierarchy: `get_project_tree`, folders, rename, move, and `delete_project_item`, which refuses any deletion that would reach beyond what it analyzed — After Effects' own `remove()` takes layers and Render Queue items without asking. Ids only; 0 is the root. |
 | `packages/jsx/batch.jsx` | `run_batch` — inline under 500 ops, otherwise a chunked job. |
 | `packages/jsx/vision.jsx` | `saveFrameToPng` wrapper, the resolution factor, contact-sheet tiles. |
 | `packages/jsx/footage.jsx` | Import, footage layers, the SVG viewBox check, the shared solid/`usedIn` helpers. |

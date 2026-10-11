@@ -1015,6 +1015,60 @@ export const RunBatch = z.object({
 
 // ---------- explore ----------
 export const GetProjectSummary = z.object({}).strict();
+
+// ---------- project hierarchy ----------
+// Ids only: After Effects allows duplicate and empty item names, and a project
+// index moves whenever anything is renamed. 0 is the project root.
+const ProjectItemId = z.number().int().nonnegative();
+const ProjectFolderId = z.number().int().nonnegative();
+const ProjectItemName = z
+  .string()
+  .min(1)
+  .regex(/\S/, "name must contain at least one non-space character")
+  .describe("Display name. Duplicates are allowed — After Effects does not require unique names — so never use a name to find an item again; use the id this returns. Empty or blank names are refused here even though After Effects accepts them.");
+export const GetProjectTree = z
+  .object({
+    folderId: ProjectFolderId.default(0)
+      .describe("Folder to list. 0 (the default) is the project root. A folder id from an earlier get_project_tree."),
+    depth: z.number().int().min(1).max(64).default(16)
+      .describe("Folder levels below folderId to list. A folder at the limit is listed with childrenNotListed:true and its id in depthLimitedFolderIds."),
+    maxItems: z.number().int().min(1).max(5000).default(500)
+      .describe("Stop after this many items; truncation.nextUnlisted names where the listing stopped."),
+  })
+  .strict();
+export const CreateProjectFolder = z
+  .object({
+    name: ProjectItemName,
+    parentFolderId: ProjectFolderId.default(0)
+      .describe("Folder to create it in. 0 (the default) is the project root."),
+  })
+  .strict();
+export const RenameProjectItem = z
+  .object({
+    itemId: ProjectItemId.describe("The project item to rename — a folder, comp or footage item. 0, the project root, is refused."),
+    name: ProjectItemName,
+  })
+  .strict();
+export const MoveProjectItem = z
+  .object({
+    itemId: ProjectItemId.describe("The project item to move — a folder (with everything in it), comp or footage item. 0, the project root, is refused."),
+    folderId: ProjectFolderId.describe("Destination folder id, or 0 for the project root. A folder cannot be moved into itself or anything inside it."),
+  })
+  .strict();
+export const AnalyzeProjectItemDeletion = z
+  .object({
+    itemId: ProjectItemId.describe("The project item whose deletion to analyze. Nothing is changed."),
+  })
+  .strict();
+export const DeleteProjectItem = z
+  .object({
+    itemId: ProjectItemId.describe("The project item to delete. 0, the project root, is refused."),
+    mode: z.enum(["safe", "recursive"]).default("safe")
+      .describe(
+        "safe (default): only an empty folder, or a comp or footage item that no layer and no Render Queue item uses. recursive: also a folder with contents, deleting everything inside it — but only when nothing outside the folder (a layer in another comp, a Render Queue item) uses any of it. No mode deletes what other comps or the Render Queue still use."
+      ),
+  })
+  .strict();
 export const FindLayers = z.object({
   compId: z.number().optional(),
   namePattern: z.string().optional(),
@@ -1566,6 +1620,13 @@ export const OpSchemas = {
   run_batch: RunBatch,
   // explore
   get_project_summary: GetProjectSummary,
+  // project hierarchy
+  get_project_tree: GetProjectTree,
+  create_project_folder: CreateProjectFolder,
+  rename_project_item: RenameProjectItem,
+  move_project_item: MoveProjectItem,
+  analyze_project_item_deletion: AnalyzeProjectItemDeletion,
+  delete_project_item: DeleteProjectItem,
   find_layers: FindLayers,
   inspect_property_tree: InspectPropertyTree,
   set_property_values: SetPropertyValues,
@@ -1711,6 +1772,14 @@ export const OpMutation = {
   run_batch: "write",
   // explore
   get_project_summary: "read",
+  // project hierarchy — the tree and the deletion analysis never write or open
+  // an undo group (noUndo in project.jsx); every other one is one undo group.
+  get_project_tree: "read",
+  analyze_project_item_deletion: "read",
+  create_project_folder: "write",
+  rename_project_item: "write",
+  move_project_item: "write",
+  delete_project_item: "write",
   find_layers: "read",
   // Never writes and never opens an undo group (noUndo in inspect.jsx).
   inspect_property_tree: "read",

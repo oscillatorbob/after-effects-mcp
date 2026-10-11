@@ -278,6 +278,12 @@ jobs:
       - name: Requests reach ExtendScript as data, never as code
         run: node tests/unit/eval-payload.mjs
 
+      # After Effects deletes project items without asking and takes layers and
+      # Render Queue items with them. This holds the hierarchy tools to ids, to
+      # cycle-free moves, and to deletions that never reach beyond the analysis.
+      - name: Project hierarchy tools refuse destructive and cyclic changes
+        run: node tests/unit/project-hierarchy.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.
