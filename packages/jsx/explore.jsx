@@ -414,6 +414,10 @@ OPS.get_layer_full = noUndo(function (args) {
     parent: l.parent ? { layerId: l.parent.id, name: l.parent.name } : null,
     sourceType: __layerKind(l),
   };
+  // Read through hasTrackMatte/trackMatteLayer: after a matte is removed AE
+  // leaves trackMatteType on its old value (see __trackMatteState).
+  try { out.trackMatte = __trackMatteState(l); } catch (eTm) {}
+  try { out.isTrackMatte = !!l.isTrackMatte; } catch (eIs) {}
   if (__wantsSection(want, "transform")) out.transform = __serializeTransformGroup(l.property("Transform"), opts);
   if (__wantsSection(want, "effects")) out.effects = __serializeEffects(l, opts);
   if (__wantsSection(want, "masks")) out.masks = __serializeMasks(l, opts);

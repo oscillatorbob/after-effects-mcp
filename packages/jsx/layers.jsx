@@ -210,7 +210,17 @@ OPS.create_camera_layer = function (args) {
   var c = getCompById(args.compId);
   var center = (args.position && args.position.length >= 2) ? [args.position[0], args.position[1]] : [c.width / 2, c.height / 2];
   var l = c.layers.addCamera(args.name || "Camera", center);
-  if (args.oneNode) { try { l.autoOrient = AutoOrientType.NO_AUTO_ORIENT; } catch (e) {} }
+  // A one-node camera is a camera with auto-orient off. This used to swallow a
+  // failed assignment and hand back a two-node camera as if it were one node.
+  if (args.oneNode) {
+    try {
+      l.autoOrient = AutoOrientType.NO_AUTO_ORIENT;
+      if (l.autoOrient !== AutoOrientType.NO_AUTO_ORIENT) throw new Error("autoOrient reads back " + String(l.autoOrient));
+    } catch (e) {
+      try { l.remove(); } catch (eRm) {}
+      throw new Error("create_camera_layer could not make a one-node camera: " + e.message + ". The camera was removed, so nothing changed.");
+    }
+  }
   return __layerSummary(l);
 };
 
@@ -244,32 +254,125 @@ OPS.delete_layer = function (args) {
   return { ok: true };
 };
 
+// ---------------------------------------------------------------------------
+// Track mattes (AE 23+ API), measured on 26.5x89 — docs/fragile-areas-ae.md
+// ---------------------------------------------------------------------------
+// `layer.setTrackMatte(source, type)` names the source explicitly; it may sit
+// above or below the target and nothing is reordered. What decides the shape
+// of this code:
+//   * a null source is accepted and does NOTHING — no throw — so the source is
+//     always resolved and checked here first;
+//   * after removeTrackMatte(), `trackMatteType` keeps its old value, so the
+//     state is read from hasTrackMatte / trackMatteLayer, never from the type;
+//   * AE refuses NO_TRACK_MATTE, the layer itself, another comp's layer,
+//     cameras and lights — all checked before anything is written.
+// The schema's `layerId` used to be accepted and ignored; the plain
+// `trackMatteType =` assignment it fell back on silently used the layer above.
+
+function __trackMatteName(v) {
+  var names = ["NO_TRACK_MATTE", "ALPHA", "ALPHA_INVERTED", "LUMA", "LUMA_INVERTED"];
+  for (var i = 0; i < names.length; i++) {
+    try { if (TrackMatteType[names[i]] === v) return names[i]; } catch (e) {}
+  }
+  return String(v);
+}
+
+// What AE says the matte is now. `type` is NO_TRACK_MATTE whenever there is no
+// source, whatever the stale trackMatteType reads.
+function __trackMatteState(layer) {
+  var src = null;
+  try { src = layer.hasTrackMatte ? layer.trackMatteLayer : null; } catch (e) { src = null; }
+  if (!src) return { type: "NO_TRACK_MATTE", layerId: null };
+  return {
+    type: __trackMatteName(layer.trackMatteType),
+    layerId: src.id,
+    layerName: src.name,
+    sourceEnabled: src.enabled
+  };
+}
+
+function __planTrackMatte(comp, layer, tm) {
+  if (tm === null || tm.type === "NO_TRACK_MATTE") {
+    if (tm && tm.layerId !== undefined && tm.layerId !== null) {
+      throw new Error(
+        "trackMatte: NO_TRACK_MATTE clears the matte, so it takes no layerId (After Effects refuses " +
+        "setTrackMatte with NO_TRACK_MATTE). Pass trackMatte:null. Nothing was changed."
+      );
+    }
+    return { clear: true };
+  }
+  var type = __enumByName(TrackMatteType, "TrackMatteType", tm.type, "trackMatte.type");
+  var source;
+  if (tm.layerId !== undefined && tm.layerId !== null) {
+    source = getLayerById(comp, tm.layerId);
+  } else {
+    if (layer.index <= 1) {
+      throw new Error(
+        "trackMatte: layer " + layer.id + " is the top layer, so there is no layer above it to use as the matte. " +
+        "Pass trackMatte.layerId to name the source. Nothing was changed."
+      );
+    }
+    source = comp.layer(layer.index - 1);
+  }
+  if (source.id === layer.id) {
+    throw new Error("trackMatte: a layer cannot be its own matte (layerId " + layer.id + "). Nothing was changed.");
+  }
+  if ((typeof CameraLayer !== "undefined" && source instanceof CameraLayer) ||
+      (typeof LightLayer !== "undefined" && source instanceof LightLayer)) {
+    throw new Error(
+      "trackMatte: layer " + source.id + " (\"" + source.name + "\") is a camera or light, which After Effects " +
+      "cannot use as a matte. Nothing was changed."
+    );
+  }
+  return { clear: false, source: source, sourceId: source.id, type: type, typeName: tm.type };
+}
+
+function __applyTrackMatte(comp, layer, plan) {
+  if (plan.clear) {
+    if (layer.hasTrackMatte) layer.removeTrackMatte();
+    var cleared = __trackMatteState(layer);
+    if (cleared.layerId !== null) {
+      throw new Error("trackMatte: removeTrackMatte() ran but layer " + layer.id + " still reports a matte (layer " + cleared.layerId + ").");
+    }
+    return cleared;
+  }
+  layer.setTrackMatte(plan.source, plan.type);
+  var st = __trackMatteState(layer);
+  if (st.layerId !== plan.sourceId || st.type !== plan.typeName) {
+    throw new Error(
+      "trackMatte did not land: asked for " + plan.typeName + " from layer " + plan.sourceId +
+      ", After Effects reads " + st.type + " from " + (st.layerId === null ? "no layer" : "layer " + st.layerId) + "."
+    );
+  }
+  return st;
+}
+
 OPS.set_layer = function (args) {
   var c = getCompById(args.compId);
   var l = getLayerById(c, args.layerId);
+  // Every name is resolved before the first assignment: an unknown one used to
+  // keep the old value and report success, and a refusal after `name` had
+  // already landed would be the half-applied call this is meant to prevent.
+  var blend = (args.blendingMode !== undefined)
+    ? __enumByName(BlendingMode, "BlendingMode", args.blendingMode, "blendingMode")
+    : null;
+  var matte = (args.trackMatte !== undefined) ? __planTrackMatte(c, l, args.trackMatte) : null;
   if (args.name !== undefined) l.name = args.name;
   if (args.enabled !== undefined) l.enabled = args.enabled;
   if (args.locked !== undefined) l.locked = args.locked;
   if (args.shy !== undefined) l.shy = args.shy;
   if (args.solo !== undefined) l.solo = args.solo;
   if (args.threeDLayer !== undefined) l.threeDLayer = args.threeDLayer;
-  if (args.blendingMode !== undefined) {
-    try { l.blendingMode = BlendingMode[args.blendingMode] || l.blendingMode; }
-    catch (e) {}
-  }
+  if (blend !== null) l.blendingMode = blend;
   if (args.label !== undefined) l.label = args.label;
   if (args.inPoint !== undefined) l.inPoint = args.inPoint;
   if (args.outPoint !== undefined) l.outPoint = args.outPoint;
   if (args.startTime !== undefined) l.startTime = args.startTime;
   if (args.stretch !== undefined) l.stretch = args.stretch;
   if (args.preserveTransparency !== undefined) l.preserveTransparency = args.preserveTransparency;
-  if (args.trackMatte) {
-    if (args.trackMatte.type) {
-      try { l.trackMatteType = TrackMatteType[args.trackMatte.type] || l.trackMatteType; }
-      catch (e2) {}
-    }
-  }
-  return __layerSummary(l);
+  var out = __layerSummary(l);
+  if (matte !== null) out.trackMatte = __applyTrackMatte(c, l, matte);
+  return out;
 };
 
 // ---------------------------------------------------------------------------

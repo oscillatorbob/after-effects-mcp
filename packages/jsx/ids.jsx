@@ -76,6 +76,22 @@ function walkProperty(root, path) {
   return cur;
 }
 
+// Look up one of After Effects' own enumerations by member name, and throw if
+// the running AE does not define it. `BlendingMode[name] || current` — the
+// shape every caller used to have — turned an unknown name into "keep the old
+// value" and the call still reported success. Callers resolve every name they
+// need *before* changing anything, so a refusal leaves the layer untouched.
+function __enumByName(enumObj, enumLabel, name, field) {
+  var v;
+  try { v = enumObj[name]; } catch (e) { v = undefined; }
+  if (name === null || name === undefined || typeof name !== "string" || v === undefined || v === null) {
+    throw new Error(
+      field + ": \"" + String(name) + "\" is not a " + enumLabel + " this After Effects defines. Nothing was changed."
+    );
+  }
+  return v;
+}
+
 function colorOrDefault(c, fallback) {
   if (!c) return fallback;
   return [Number(c[0]), Number(c[1]), Number(c[2])];

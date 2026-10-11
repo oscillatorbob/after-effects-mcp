@@ -168,9 +168,15 @@ try {
   check("the resolver invents nothing the caller did not send", () => {
     // The panel reads `undoGroup === false` and `args.diff` directly, so a
     // default manufactured here would be a second place that decides what the
-    // call meant. Absent has to stay absent.
-    const out = resolveRunJsxSource(RunJsx.parse({ code: "return 1;" }));
-    assert.deepEqual(Object.keys(out), ["code"]);
+    // call meant. Absent has to stay absent. Since Phase A1 the schema's own
+    // defaults (`undoGroup: true`, `diff: false`) are applied by the parse —
+    // they are the schema deciding, once — so the resolver's output must hold
+    // exactly the keys the parse produced and nothing more.
+    const parsed = RunJsx.parse({ code: "return 1;" });
+    const out = resolveRunJsxSource(parsed);
+    assert.deepEqual(Object.keys(out).sort(), Object.keys(parsed).sort());
+    assert.equal(out.undoGroup, true);
+    assert.equal(out.diff, false);
   });
 
   // -------------------------------------------------------------------------

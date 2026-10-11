@@ -21,6 +21,7 @@ import type { CompFingerprint } from "./snapshots/store.js";
 import { descriptions } from "./tools/descriptions.js";
 import { AeError, BridgeTimeoutError, BridgeUnreachableError, aeErrorText, invalidArgsText } from "./util/errors.js";
 import { resolveRunJsxSource, type RunJsxArgs } from "./tools/runJsxSource.js";
+import { parseOpArgs, validateBatchOps, type BatchStep } from "./tools/batchSteps.js";
 import { checkSetup } from "./setup/check.js";
 import { installPanel } from "./setup/install.js";
 import { ClientKind, detectClient, scaffold } from "./setup/scaffold.js";
@@ -365,12 +366,26 @@ export function createServer(opts: CreateServerOptions = {}) {
       }
     }
 
-    // Validate input against zod schema.
+    // Validate input against zod schema — the strict form, so an unknown key is
+    // refused rather than stripped (tools/batchSteps.ts).
     let args: unknown;
     try {
-      args = (OpSchemas[name as keyof typeof OpSchemas] as z.ZodTypeAny).parse(rawArgs);
+      args = parseOpArgs(name, rawArgs);
     } catch (e) {
       return fail(name, invalidArgsText(name, e));
+    }
+
+    // Every step of a batch gets the parse above too, and the whole batch is
+    // checked before any of it is sent: an invalid step 50 must not leave steps
+    // 0-49 applied, because nothing in a batch rolls back. This covers the
+    // inline, singleUndo and chunked paths alike — all three start here.
+    if (name === "run_batch") {
+      try {
+        const b = args as { ops: BatchStep[] };
+        args = { ...b, ops: validateBatchOps(b.ops) };
+      } catch (e) {
+        return fail(name, (e as Error).message);
+      }
     }
 
     // run_jsx can take its script, and its helper libraries, from files rather

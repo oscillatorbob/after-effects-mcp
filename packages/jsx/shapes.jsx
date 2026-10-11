@@ -227,8 +227,9 @@ OPS.set_shape_property = function (args) {
   var node = walkProperty(l, args.contentPath);
   var pp = node.property(args.property);
   if (!pp) throw new Error("No property: " + args.property);
-  if (args.keyframe && args.time !== undefined) pp.setValueAtTime(args.time, args.value);
-  else if (args.time !== undefined && pp.numKeys > 0) pp.setValueAtTime(args.time, args.value);
+  // `time` and `keyframe: true` go together — see set_transform.
+  var keyed = __checkTimeKeyframe(args.time, args.keyframe, "set_shape_property");
+  if (keyed) pp.setValueAtTime(args.time, args.value);
   else pp.setValue(args.value);
-  return { ok: true };
+  return { ok: true, keyed: keyed };
 };

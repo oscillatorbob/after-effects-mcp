@@ -215,9 +215,12 @@ check("there is at least one declared rule, so the rest of this file means somet
 check("every rule is well formed", () => {
   for (const { op, rule } of rules) {
     assert.ok(
-      ["exactlyOne", "atMostOne", "atLeastOne"].includes(rule.kind),
+      ["exactlyOne", "atMostOne", "atLeastOne", "requiresFlag"].includes(rule.kind),
       `${op}: unknown rule kind ${JSON.stringify(rule.kind)}`
     );
+    if (rule.kind === "requiresFlag") {
+      assert.equal(rule.fields.length, 2, `${op}: a requiresFlag rule is exactly one value and one flag`);
+    }
     assert.ok(rule.fields.length >= 2, `${op}: a cross-field rule needs at least two fields`);
     assert.equal(new Set(rule.fields).size, rule.fields.length, `${op}: duplicate field in rule`);
   }
@@ -341,6 +344,16 @@ check("the JSON Schema form and the zod form agree on every combination", () => 
       if (rule.fields.includes(key)) continue;
       base[key] = sampleFor(op, schema.properties[key]);
     }
+    // An op can carry more than one rule (set_effect_param: atLeastOne over
+    // its param names, requiresFlag over time/keyframe). Satisfy every OTHER
+    // rule with the fewest fields, so the one under test is the only variable.
+    for (const other of rules) {
+      if (other.op !== op || other.rule === rule) continue;
+      if (other.rule.kind === "exactlyOne" || other.rule.kind === "atLeastOne") {
+        const f = other.rule.fields.find((x) => !rule.fields.includes(x));
+        base[f] = sampleFor(op, schema.properties[f]);
+      }
+    }
 
     for (let mask = 0; mask < 1 << rule.fields.length; mask++) {
       const payload = { ...base };
@@ -384,6 +397,7 @@ const PHRASES = {
   exactlyOne: ["exactly one"],
   atLeastOne: ["at least one"],
   atMostOne: ["mutually exclusive", "not both", "at most one"],
+  requiresFlag: ["go together"],
 };
 
 check("every rule is stated in its tool description", () => {
@@ -475,7 +489,15 @@ check("the ops known to carry a cross-field rule still carry one", () => {
     run_jsx: "exactlyOne",
     set_temporal_ease: "atLeastOne",
     set_effect_param: "atLeastOne",
+    set_transform: "requiresFlag",
+    set_shape_property: "requiresFlag",
   };
+  // set_effect_param carries both of its rules; the map above keeps its
+  // original one, and its time/keyframe rule is asserted here.
+  assert.ok(
+    rules.some((r) => r.op === "set_effect_param" && r.rule.kind === "requiresFlag"),
+    "set_effect_param lost its time/keyframe rule"
+  );
   for (const [op, kind] of Object.entries(expected)) {
     assert.ok(byOp[op], `${op} lost its cross-field rule`);
     assert.equal(byOp[op].kind, kind, `${op} changed rule kind`);

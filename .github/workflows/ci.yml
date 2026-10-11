@@ -238,6 +238,19 @@ jobs:
       - name: itemByID's missing-item throw is normalized everywhere it is used
         run: node tests/unit/item-by-id.mjs
 
+      # A batch step is parsed exactly like a direct call, and an invalid step
+      # anywhere in it means nothing reaches After Effects — nothing in a batch
+      # rolls back, so finding the mistake first is the only safe order.
+      - name: run_batch validates every step before any is sent
+        run: node tests/unit/batch-validation.mjs
+
+      # Writes that used to answer {ok:true} for work they did not do — unknown
+      # enum names, 3D-only transforms on a 2D layer, a swallowed text-animator
+      # addProperty, a track matte whose source layer was ignored — now refuse
+      # before changing anything.
+      - name: write handlers refuse rather than silently skip
+        run: node tests/unit/silent-writes.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.

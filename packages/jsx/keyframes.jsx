@@ -114,12 +114,25 @@ OPS.add_keyframe = function (args) {
   var l = getLayerById(c, args.layerId);
   var prop = walkProperty(l, args.propertyPath);
   prop.setValueAtTime(args.time, args.value);
-  var easeDimensions = null;
-  if (args.interpolation) {
-    var idx = __findKeyIndexAtTime(prop, args.time);
-    if (idx > 0) easeDimensions = __applyInterpolationToKey(prop, idx, args.interpolation);
+  // Re-find the key just written. If it cannot be found, the requested
+  // interpolation used to be skipped without a word and the result read
+  // {ok:true, keyIndex:-1}. Half a frame is the tolerance: within that the key
+  // is the one asked for, whatever rounding AE applied to the time.
+  var idx = __findKeyIndexAtTime(prop, args.time);
+  if (idx < 1 && prop.numKeys > 0) {
+    var near = prop.nearestKeyIndex(args.time);
+    if (Math.abs(prop.keyTime(near) - args.time) <= 0.5 / c.frameRate) idx = near;
   }
-  var out = { ok: true, keyIndex: __findKeyIndexAtTime(prop, args.time) };
+  if (idx < 1) {
+    throw new Error(
+      "add_keyframe wrote a value at " + args.time + "s but cannot find a key there afterwards" +
+      (args.interpolation ? ", so the requested interpolation was NOT applied" : "") +
+      ". Read the property back with get_keyframes before retrying."
+    );
+  }
+  var easeDimensions = null;
+  if (args.interpolation) easeDimensions = __applyInterpolationToKey(prop, idx, args.interpolation);
+  var out = { ok: true, keyIndex: idx };
   if (easeDimensions !== null) out.easeDimensions = easeDimensions;
   return out;
 };

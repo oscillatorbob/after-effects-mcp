@@ -92,34 +92,108 @@ OPS.set_text = function (args) {
   };
 };
 
+var __TEXT_ANIMATOR_PROPS = {
+  position: "ADBE Text Position 3D",
+  scale: "ADBE Text Scale 3D",
+  rotation: "ADBE Text Rotation",
+  opacity: "ADBE Text Opacity",
+  tracking: "ADBE Text Tracking Amount",
+  skew: "ADBE Text Skew",
+  fillColor: "ADBE Text Fill Color",
+  strokeColor: "ADBE Text Stroke Color"
+};
+
+var __TEXT_RANGE_KEYS = [
+  ["start", "ADBE Text Percent Start"],
+  ["end", "ADBE Text Percent End"],
+  ["offset", "ADBE Text Percent Offset"]
+];
+
+// The animator at `index`, fetched fresh from the layer. A text animator's
+// handles go stale when a child is added beneath it — the same trap as a shape
+// node (issue #24) — so nothing here holds one across an addProperty.
+function __textAnimatorAt(l, index) {
+  return l.property("ADBE Text Properties").property("ADBE Text Animators").property(index);
+}
+
+// add_text_animator used to swallow a failed addProperty for the animator
+// property and report {ok:true} with an animator that animated nothing. Now
+// every node it creates is re-fetched and checked by matchName before the next
+// step, and any failure removes the animator it made — so the result is either
+// a verified animator or an error with nothing left behind.
 OPS.add_text_animator = function (args) {
   var c = getCompById(args.compId);
   var l = getLayerById(c, args.layerId);
-  if (!(l instanceof TextLayer)) throw new Error("Layer is not a TextLayer");
-  var anims = l.property("Text").property("Animators");
-  var anim = anims.addProperty("ADBE Text Animator");
-  var typeMap = {
-    position: "ADBE Text Position 3D",
-    scale: "ADBE Text Scale 3D",
-    rotation: "ADBE Text Rotation",
-    opacity: "ADBE Text Opacity",
-    tracking: "ADBE Text Tracking Amount",
-    skew: "ADBE Text Skew",
-    fillColor: "ADBE Text Fill Color",
-    strokeColor: "ADBE Text Stroke Color",
-  };
-  var propsGroup = anim.property("ADBE Text Animator Properties");
-  if (typeMap[args.type]) {
-    try { propsGroup.addProperty(typeMap[args.type]); }
-    catch (e) {}
+  if (!(l instanceof TextLayer)) throw new Error("Layer " + args.layerId + " is not a TextLayer");
+  var propMatch = __TEXT_ANIMATOR_PROPS[args.type];
+  if (!propMatch) {
+    throw new Error("Unknown text animator type '" + String(args.type) + "'. Nothing was changed.");
   }
-  if (args.range) {
-    var selectors = anim.property("ADBE Text Selectors");
-    if (selectors.numProperties === 0) selectors.addProperty("ADBE Text Selector");
-    var sel = selectors.property(1);
-    if (args.range.start !== undefined) sel.property("ADBE Text Percent Start").setValue(args.range.start);
-    if (args.range.end !== undefined) sel.property("ADBE Text Percent End").setValue(args.range.end);
-    if (args.range.offset !== undefined) sel.property("ADBE Text Percent Offset").setValue(args.range.offset);
+
+  var anims = l.property("ADBE Text Properties").property("ADBE Text Animators");
+  var created = anims.addProperty("ADBE Text Animator");
+  if (!created) throw new Error("After Effects did not create a text animator on layer " + args.layerId + ". Nothing was changed.");
+  var index = created.propertyIndex;
+  var step = "animator";
+
+  try {
+    var anim = __textAnimatorAt(l, index);
+    if (!anim || anim.matchName !== "ADBE Text Animator") throw new Error("the new animator was not found at index " + index);
+
+    step = "animator property " + propMatch;
+    var added = anim.property("ADBE Text Animator Properties").addProperty(propMatch);
+    if (!added) throw new Error("addProperty returned nothing");
+    var props = __textAnimatorAt(l, index).property("ADBE Text Animator Properties");
+    var prop = props.property(propMatch);
+    if (!prop || prop.matchName !== propMatch) throw new Error("the property is not on the animator after adding it");
+    // A primitive, because adding the selector below can invalidate `prop`.
+    var propName = prop.name;
+
+    var selector = null;
+    if (args.range) {
+      step = "range selector";
+      var selectors = __textAnimatorAt(l, index).property("ADBE Text Selectors");
+      if (selectors.numProperties === 0) {
+        var sAdded = selectors.addProperty("ADBE Text Selector");
+        if (!sAdded) throw new Error("addProperty returned nothing");
+        selectors = __textAnimatorAt(l, index).property("ADBE Text Selectors");
+      }
+      var sel = selectors.property(1);
+      if (!sel || sel.matchName !== "ADBE Text Selector") throw new Error("no range selector on the animator after adding one");
+      selector = { name: sel.name, index: 1 };
+      for (var i = 0; i < __TEXT_RANGE_KEYS.length; i++) {
+        var key = __TEXT_RANGE_KEYS[i][0];
+        if (args.range[key] === undefined) continue;
+        step = "range selector " + key;
+        var rp = sel.property(__TEXT_RANGE_KEYS[i][1]);
+        if (!rp) throw new Error("the selector has no " + __TEXT_RANGE_KEYS[i][1]);
+        rp.setValue(args.range[key]);
+        selector[key] = rp.value;
+      }
+    }
+
+    var finalAnim = __textAnimatorAt(l, index);
+    var out = {
+      ok: true,
+      animatorName: finalAnim.name,
+      animatorIndex: index,
+      property: { name: propName, matchName: propMatch },
+      // The path add_keyframe / set_expression take to animate what was added.
+      propertyPath: ["ADBE Text Properties", "ADBE Text Animators", index, "ADBE Text Animator Properties", propMatch]
+    };
+    if (selector) out.selector = selector;
+    return out;
+  } catch (e) {
+    var removed = false;
+    try {
+      var leftover = __textAnimatorAt(l, index);
+      if (leftover && leftover.matchName === "ADBE Text Animator") { leftover.remove(); removed = true; }
+    } catch (eRm) {}
+    var msg = (e && e.message) ? String(e.message) : String(e);
+    throw new Error(
+      "add_text_animator failed at the " + step + ": " + msg + ". " +
+      (removed ? "The animator it created was removed, so nothing changed."
+               : "The animator it created could not be removed — check the layer's Text > Animators before retrying.")
+    );
   }
-  return { ok: true, animatorName: anim.name };
 };

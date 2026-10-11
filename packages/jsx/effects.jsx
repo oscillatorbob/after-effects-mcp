@@ -56,10 +56,12 @@ OPS.set_effect_param = function (args) {
   }
   if (!p && args.paramName) p = eff.property(args.paramName);
   if (!p) throw new Error("Effect param not found");
-  if (args.keyframe && args.time !== undefined) p.setValueAtTime(args.time, args.value);
-  else if (args.time !== undefined && p.numKeys > 0) p.setValueAtTime(args.time, args.value);
+  // `time` and `keyframe: true` go together — a `time` alone used to become a
+  // static write that ignored it whenever the parameter had no keys yet.
+  var keyed = __checkTimeKeyframe(args.time, args.keyframe, "set_effect_param");
+  if (keyed) p.setValueAtTime(args.time, args.value);
   else p.setValue(args.value);
-  return { ok: true };
+  return { ok: true, keyed: keyed };
 };
 
 OPS.set_effect_enabled = function (args) {
