@@ -100,9 +100,10 @@
     }
     throw new Error("could not load " + name + " from any of: " + failures.join("; "));
   }
-  var pngCodec, frameCacheModule, mogrtModule, contactSheetModule, frameReaderModule;
+  var pngCodec, frameCacheModule, mogrtModule, contactSheetModule, frameReaderModule, evalPayload;
   try {
     pngCodec = requireSibling("pngcodec.js");
+    evalPayload = requireSibling("evalpayload.js");
     frameCacheModule = requireSibling("framecache.js");
     mogrtModule = requireSibling("mogrt.js");
     contactSheetModule = requireSibling("contactsheet.js");
@@ -133,11 +134,16 @@
     return p;
   }
 
+  // Whether the bundle running in ExtendScript defines dispatchValue(), which
+  // takes the request as a data literal instead of parsing a JSON string —
+  // see evalpayload.js for why, and for what keeps that literal data. Probed
+  // after every bundle load, so a bundle that predates it is sent the JSON
+  // form it understands.
+  var literalDispatch = false;
+
   // Run an op through the dispatch table. Returns parsed JS object.
   function runOp(op, args) {
-    var payload = JSON.stringify({ op: op, args: args || {} });
-    // Use \uXXXX-safe JSON pass: JSON.stringify on the panel side, JSON.parse on ExtendScript side.
-    var script = "JSON.stringify(dispatch(" + JSON.stringify(payload) + "))";
+    var script = evalPayload.buildDispatchScript({ op: op, args: args || {} }, literalDispatch).script;
     return evalScript(script).then(function (raw) {
       if (raw === "undefined" || raw === undefined || raw === null) {
         throw new Error("ExtendScript returned undefined for op " + op);
@@ -204,7 +210,10 @@
           loadedBundleHash = hashFile(bundlePath);
           $jsx.textContent = "loaded";
           $jsx.className = "ok";
-          resolve();
+          cs.evalScript("typeof dispatchValue", function (kind) {
+            literalDispatch = kind === "function";
+            resolve();
+          });
         }
         else { $jsx.textContent = "fail: " + raw; $jsx.className = "err"; reject(new Error("dispatch not defined after loading bundle.jsx: " + raw)); }
       });

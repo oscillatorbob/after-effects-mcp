@@ -272,6 +272,12 @@ jobs:
       - name: set_keyframes animates in bulk, verified and all-or-nothing
         run: node tests/unit/set-keyframes.mjs
 
+      # Every request is written into the script After Effects evaluates, as a
+      # data literal (ExtendScript's JSON.parse is quadratic). This holds that
+      # literal to data: adversarial strings arrive intact and nothing runs.
+      - name: Requests reach ExtendScript as data, never as code
+        run: node tests/unit/eval-payload.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.

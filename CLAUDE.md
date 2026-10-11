@@ -17,7 +17,7 @@ session is a tax on every request the user ever makes.
 | [`docs/fragile-areas-ae.md`](docs/fragile-areas-ae.md) | Measured After Effects and ExtendScript behaviour: undo, shapes, text, audio, mogrt, expressions, `run_jsx`. |
 | [`docs/fragile-areas-bridge.md`](docs/fragile-areas-bridge.md) | The bridge, ports, CEP, the panel, and the screenshot pipeline. |
 | [`docs/fragile-areas-server.md`](docs/fragile-areas-server.md) | Tool schemas and the MCP protocol, the journal's caches, packaging and binaries. |
-| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 51 recipes run by hand against a live AE 2026. |
+| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 52 recipes run by hand against a live AE 2026. |
 
 **Nothing in `docs/` is generated** — hand-written, like this file. The generated
 prose is elsewhere and is called out below.
@@ -93,6 +93,7 @@ One line each. The annotated version — why each file is the way it is — is i
 | `packages/jsx/style.jsx` | `get_house_style` / `set_house_style`, read beside the .aep over the bridge. |
 | `packages/ae-panel/CSXS/manifest.xml` | CEP manifest. Auto-start on AE activate, Node enabled. |
 | `packages/ae-panel/client/main.js` | HTTP+WS server, the `evalScript` mutex, the job driver, port binding and the port file. |
+| `packages/ae-panel/client/evalpayload.js` | **The only place a request becomes script text** — a data literal for `dispatchValue`. Never concatenate caller text into a script. |
 | `packages/ae-panel/client/pngcodec.js` | 16→8-bit conversion, empty-frame detection, `inspectPngStructure`. |
 | `packages/ae-panel/client/framereader.js` | Decides when After Effects has *finished* writing a frame. |
 | `packages/ae-panel/client/contactsheet.js` | Tiles several frames into one labelled sheet. |

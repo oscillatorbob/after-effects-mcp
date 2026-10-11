@@ -132,12 +132,23 @@ function __mkError(e) {
 }
 
 // ---------- Main dispatch ----------
-// Called from panel with a JSON string payload {op, args, requestId}.
-// Returns a plain object {ok, result|error}. Panel JSON.stringifys.
+// dispatch(json) takes the request {op, args} as a JSON string; dispatchValue
+// takes it already built. The panel sends dispatchValue a data literal written
+// by client/evalpayload.js, because ExtendScript's native JSON.parse is the
+// slowest thing on the bridge for a large request (6.9 s for 98 KB on AE 26.5,
+// against 13 ms for the compiler to read the same text as a literal) — see
+// docs/fragile-areas-bridge.md. dispatch() stays for a panel that predates
+// dispatchValue and for requests the literal path declines. Both return a
+// plain object {ok, result|error}; the panel JSON.stringifys it.
 function dispatch(payloadJson) {
   var payload;
   try { payload = JSON.parse(payloadJson); }
   catch (e) { return { ok: false, error: "Bad payload JSON: " + e.message }; }
+  return dispatchValue(payload);
+}
+
+function dispatchValue(payload) {
+  if (!payload || typeof payload !== "object") return { ok: false, error: "Bad payload: expected an object {op, args}" };
   var op = payload.op;
   var args = payload.args || {};
   if (!OPS.hasOwnProperty(op)) return { ok: false, error: "Unknown op: " + op };
