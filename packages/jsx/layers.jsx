@@ -546,12 +546,23 @@ function __ptLocalMatrix(l, t) {
   return __ptMMul(__ptMMul([1, 0, 0, 1, pos[0], pos[1]], rs), [1, 0, 0, 1, -anc[0], -anc[1]]);
 }
 
+// Cameras and lights are named positively, never as "not an AVLayer": shape and
+// text layers are AV layers in Adobe's class tree, but `instanceof AVLayer` is
+// false for both in ExtendScript (measured on 26.5x89, recipe 67), so that test
+// turned every shape and text layer away as a camera or light (recipe 62).
+function __ptCameraOrLight(l) {
+  if (typeof CameraLayer !== "undefined" && l instanceof CameraLayer) return "camera";
+  if (typeof LightLayer !== "undefined" && l instanceof LightLayer) return "light";
+  return null;
+}
+
 // Walks up the parent chain. `m` is the layer's full world matrix; `wb` is its
 // world anchor position under the anchor-relative reading of Position.
 function __ptChain(l, t, depth) {
   if (!l) return { ok: true, m: __ptMId(), wb: [0, 0], animated: false };
   if (depth > 32) return { ok: false, reason: "parent chain deeper than 32 layers" };
-  if (!(l instanceof AVLayer)) return { ok: false, reason: 'a camera or light in the chain ("' + l.name + '") has no 2D transform' };
+  var cl = __ptCameraOrLight(l);
+  if (cl) return { ok: false, reason: "a " + cl + ' in the chain ("' + l.name + '") has no 2D transform' };
   if (l.threeDLayer) return { ok: false, reason: 'a 3D layer in the chain ("' + l.name + '")' };
   var up = __ptChain(l.parent, t, depth + 1);
   if (!up.ok) return up;

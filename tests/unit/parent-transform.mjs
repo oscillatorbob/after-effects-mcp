@@ -62,6 +62,10 @@ class MockLayer {
     this.index = 1;
     this.id = tr.id;
     this.nullLayer = true;          // keeps __layerKind off the source branches
+    // Which ExtendScript class the layer is: "av" (null, solid), "shape",
+    // "text", "camera" or "light". See LAYER_CLASSES below.
+    this.kind = tr.kind || "av";
+    if (this.kind !== "av") this.nullLayer = false;
     this.adjustmentLayer = false;
     this._parent = null;
     this.props = {
@@ -164,13 +168,26 @@ function writeLocal(l, wanted, basis, worldBefore) {
   }
 }
 
+// ---------- the layer classes, as ExtendScript answers instanceof ----------
+// Measured on 26.5x89 (recipe 67): a shape or text layer is NOT instanceof
+// AVLayer, although Adobe's class tree puts both under it; a null and a solid
+// are; a camera and a light are only their own class. The mock used to make
+// every layer an AVLayer, which is how recipe 62's shape layer slipped through.
+const ofKind = (...kinds) => class { static [Symbol.hasInstance](o) { return !!o && kinds.includes(o.kind); } };
+const LAYER_CLASSES = {
+  AVLayer: ofKind("av"),
+  ShapeLayer: ofKind("shape"),
+  TextLayer: ofKind("text"),
+  CameraLayer: ofKind("camera"),
+  LightLayer: ofKind("light"),
+};
+
 // ---------- load the real handler ----------
 
 function loadOps(layers) {
   const ctx = {
     OPS: {},
-    AVLayer: MockLayer,
-    TextLayer: class {}, ShapeLayer: class {}, CameraLayer: class {}, LightLayer: class {},
+    ...LAYER_CLASSES,
     CompItem: class {}, FootageItem: class {},
     Math,
     isFinite,
@@ -425,6 +442,93 @@ for (const model of ["layer-space", "anchor-relative"]) {
   assert.match(r.correction.notes.join(" "), /3D layer/, "a 3D layer must say why it was not corrected");
   assert.equal(s.bubA.parent, s.pb, "the parenting itself must still happen");
   passed += 3;
+}
+
+// Shape and text layers get the same 2D handling as nulls and solids (recipe
+// 62: they were turned away as "a camera or light"). Each kind is checked as
+// the child and as a scaled, rotated parent — honest host, stale host, and the
+// way back out — and no note may mention a camera or light.
+for (const kind of ["av", "shape", "text"]) {
+  for (const role of ["child", "parent"]) {
+    MODEL = "layer-space";
+    const label = `${kind} as ${role}`;
+    const scene = () => {
+      const s = twoLevelScene({ fig: [0, 0], pb: [0, 0], bub: [0, 0] });
+      (role === "child" ? s.bubA : s.pb).kind = kind;
+      if (kind !== "av") (role === "child" ? s.bubA : s.pb).nullLayer = false;
+      s.pb.props.Scale.v = [60, 60];
+      s.pb.props.Rotation.v = 30;
+      s.pb.parent = s.fig;             // so a stale basis really is stale
+      return s;
+    };
+    const noCameraTalk = (r) => assert.doesNotMatch(r.correction.notes.join(" "), /camera|light|not corrected/, `${label}: ${r.correction.notes.join(" ")}`);
+
+    // Honest compensation: checked, nothing to write.
+    {
+      const s = scene();
+      const ops = loadOps(s.all);
+      const want = worldMatrix(s.bubA);
+      const r = ops.parent_layer({ compId: 1, layerId: 3, parentLayerId: 2 });
+      assertSameWorld(`${label} honest`, worldMatrix(s.bubA), want);
+      assert.equal(r.correction.applied, false, `${label}: an honest compensation needs no correction`);
+      noCameraTalk(r);
+      passed += 3;
+    }
+    // Stale compensation: corrected, exactly as for a null.
+    {
+      const s = scene();
+      const ops = loadOps(s.all);
+      s.bubA.staleParentMatrix = staleBasis(s.pb);
+      const want = worldMatrix(s.bubA);
+      const r = ops.parent_layer({ compId: 1, layerId: 3, parentLayerId: 2 });
+      assert.equal(r.correction.applied, true, `${label}: a stale compensation must be corrected`);
+      assertSameWorld(`${label} stale`, worldMatrix(s.bubA), want);
+      noCameraTalk(r);
+      passed += 3;
+    }
+    // Unparenting from the scaled, rotated parent with a wrong basis.
+    {
+      const s = scene();
+      const ops = loadOps(s.all);
+      s.bubA.parent = s.pb;
+      const want = worldMatrix(s.bubA);
+      s.bubA.staleParentMatrix = I();
+      const r = ops.parent_layer({ compId: 1, layerId: 3, parentLayerId: null });
+      assertSameWorld(`${label} unparent`, worldMatrix(s.bubA), want);
+      noCameraTalk(r);
+      passed += 2;
+    }
+  }
+}
+
+// Cameras and lights keep their policy — not corrected, the parenting still
+// happens — and the note now names which one it is.
+for (const kind of ["camera", "light"]) {
+  MODEL = "layer-space";
+  const s = twoLevelScene({ fig: [0, 0], pb: [0, 0], bub: [0, 0] });
+  s.pb.kind = kind;
+  s.pb.nullLayer = false;
+  s.pb.threeDLayer = undefined;      // what AE reads on a camera or light
+  const ops = loadOps(s.all);
+  const r = ops.parent_layer({ compId: 1, layerId: 3, parentLayerId: 2 });
+  assert.equal(r.correction.applied, false, `${kind}: never corrected`);
+  assert.equal(r.correction.notes.join(" "), `not corrected: a ${kind} in the chain ("pb") has no 2D transform`);
+  assert.equal(s.bubA.parent, s.pb, `${kind}: the parenting itself must still happen`);
+  passed += 3;
+}
+
+// A 3D shape layer is still refused as 3D, not as anything else.
+{
+  MODEL = "layer-space";
+  const s = twoLevelScene({ fig: [0, 0], pb: [0, 0], bub: [0, 0] });
+  s.bubA.kind = "shape";
+  s.bubA.nullLayer = false;
+  s.bubA.threeDLayer = true;
+  const ops = loadOps(s.all);
+  const r = ops.parent_layer({ compId: 1, layerId: 3, parentLayerId: 2 });
+  assert.equal(r.correction.applied, false);
+  assert.equal(r.correction.notes.join(" "), 'not corrected: a 3D layer in the chain ("bubA")');
+  passed += 2;
 }
 
 console.log(`parent-transform: ${passed} assertions passed`);
