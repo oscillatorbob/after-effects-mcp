@@ -235,16 +235,62 @@ OPS.create_light_layer = function (args) {
   return __layerSummary(l);
 };
 
+// Measured on 26.5x89 (docs/fragile-areas-ae.md, "Layer structure"):
+// layer.duplicate() puts the copy directly ABOVE the original, with a fresh id,
+// AE's own "<name> 2" style name, the same parent, the same track-matte source
+// (a duplicated matte *target* keeps its matte; a duplicated *source* is not a
+// matte for anything) and the SAME source project item — no footage, solid or
+// comp is copied. A locked layer duplicates into a locked copy, and AE refuses
+// to rename a locked layer, so newName on a locked layer is refused up front.
 OPS.duplicate_layer = function (args) {
   var c = getCompById(args.compId);
   var l = getLayerById(c, args.layerId);
   var n = args.count || 1;
-  var out = [];
+  if (args.newName !== undefined && l.locked) {
+    throw new Error(
+      "duplicate_layer: layer " + l.id + " (\"" + l.name + "\") is locked, so its copy is locked too and After Effects " +
+      "refuses to rename it. Unlock it with set_layer locked:false first, or omit newName. Nothing was changed."
+    );
+  }
+  var srcItemId = l.source ? l.source.id : null;
+  var origName = l.name;
+  var made = [];
   for (var i = 0; i < n; i++) {
     var d = l.duplicate();
-    out.push(__layerSummary(d));
+    if (args.newName !== undefined) d.name = args.newName;
+    made.push(d);
   }
-  return out;
+  // Every copy re-fetched by id: distinct from the original and from each
+  // other, and the original still there, still named what it was.
+  var orig = getLayerById(c, l.id);
+  if (orig.name !== origName) throw new Error("duplicate_layer: the original layer " + l.id + " was renamed to \"" + orig.name + "\" by the duplicate.");
+  var seen = {};
+  seen[orig.id] = true;
+  var out = [];
+  for (var j = 0; j < made.length; j++) {
+    var back = getLayerById(c, made[j].id);
+    if (seen[back.id]) throw new Error("duplicate_layer: After Effects returned layer " + back.id + " twice; the duplicate did not land as a new layer.");
+    seen[back.id] = true;
+    if (args.newName !== undefined && back.name !== args.newName) {
+      throw new Error("duplicate_layer: copy " + back.id + " reads back named \"" + back.name + "\", not \"" + args.newName + "\".");
+    }
+    out.push({
+      layerId: back.id,
+      index: back.index,
+      name: back.name,
+      sourceType: __layerKind(back),
+      sourceItemId: back.source ? back.source.id : null,
+      parentLayerId: back.parent ? back.parent.id : null,
+      locked: back.locked
+    });
+  }
+  return {
+    sourceLayerId: orig.id,
+    sourceLayerIndex: orig.index,
+    sourceItemId: srcItemId,
+    duplicates: out,
+    note: "Copies sit directly above the original and share its source item; nothing was added to the project."
+  };
 };
 
 OPS.delete_layer = function (args) {
@@ -525,22 +571,107 @@ function __ptExprDriven(prop) {
   try { return !!prop.expressionEnabled; } catch (e) { return false; }
 }
 
+// ---------------------------------------------------------------------------
+// The parenting preflight, shared by parent_layer and set_layer_parent
+// ---------------------------------------------------------------------------
+// Measured on 26.5x89 (docs/fragile-areas-ae.md, "Layer structure"):
+//   * AE refuses a layer as its own parent and a parent that is one of its
+//     descendants, with one message for both ("cannot be itself nor one of its
+//     children"). Checked here first, by walking the proposed parent's chain,
+//     so the refusal names the cycle and nothing is assigned.
+//   * A locked layer's `parent` cannot be set; a locked layer CAN be a parent.
+//   * Every pairing of 2D, 3D, camera, light and null is accepted — there is no
+//     compatibility rule to enforce, only the cycle.
+// Returns the new parent layer, or null to unparent.
+function __planParent(comp, layer, parentLayerId, opName) {
+  if (layer.locked) {
+    throw new Error(
+      opName + ": layer " + layer.id + " (\"" + layer.name + "\") is locked, and After Effects refuses to " +
+      "re-parent a locked layer. Unlock it with set_layer locked:false first. Nothing was changed."
+    );
+  }
+  if (parentLayerId === null || parentLayerId === undefined) return null;
+  var np = getLayerById(comp, parentLayerId);
+  if (np.id === layer.id) {
+    throw new Error(opName + ": a layer cannot be its own parent (layerId " + layer.id + "). Nothing was changed.");
+  }
+  var chain = [];
+  for (var p = np; p; p = p.parent) {
+    chain.push(p.id);
+    if (p.id === layer.id) {
+      throw new Error(
+        opName + ": parenting layer " + layer.id + " to " + np.id + " would make a cycle — " + np.id +
+        " is already a descendant of " + layer.id + " (chain upward from " + np.id + ": " + chain.join(" -> ") +
+        "). Unparent or re-parent " + np.id + " first. Nothing was changed."
+      );
+    }
+    if (chain.length > comp.numLayers + 1) break;   // AE forbids cycles; this only guards a corrupt chain
+  }
+  return np;
+}
+
+// The parent assignment that keeps the layer's LOCAL values — what AE's
+// setParentWithJump does (measured: Position, Rotation, Orientation read back
+// unchanged, in 2D and 3D, so the layer visibly jumps into the parent's space).
+// A plain `layer.parent =` is NOT this: AE compensates it to keep the world
+// pose, which is why preserveTransform:false used to be a no-op in all but
+// name. The local values are read before and after so the result can say they
+// held rather than assume it.
+function __transformSnapshot(layer, t) {
+  var out = {};
+  var tr = null;
+  try { tr = layer.property("ADBE Transform Group"); } catch (e) { tr = null; }
+  if (!tr) return out;
+  for (var i = 1; i <= tr.numProperties; i++) {
+    var p = tr.property(i);
+    try { out[p.matchName] = p.valueAtTime(t, false); } catch (e) {}
+  }
+  return out;
+}
+function __snapshotDiff(a, b) {
+  var changed = [];
+  for (var k in a) {
+    if (!a.hasOwnProperty(k)) continue;
+    var x = a[k], y = b[k];
+    if (typeof x === "number") { if (typeof y !== "number" || Math.abs(x - y) > 1e-6) changed.push(k); continue; }
+    if (!x || !y || x.length !== y.length) { if (x !== y) changed.push(k); continue; }
+    for (var i = 0; i < x.length; i++) if (Math.abs(x[i] - y[i]) > 1e-6) { changed.push(k); break; }
+  }
+  return changed;
+}
+function __parentJump(comp, layer, newParent) {
+  if (typeof layer.setParentWithJump !== "function") {
+    throw new Error("This After Effects has no Layer.setParentWithJump, so a parent cannot be set without compensation. Nothing was changed.");
+  }
+  var before = __transformSnapshot(layer, comp.time);
+  layer.setParentWithJump(newParent);
+  var changed = __snapshotDiff(before, __transformSnapshot(layer, comp.time));
+  return { localTransformUnchanged: changed.length === 0, localPropertiesChanged: changed };
+}
+
 OPS.parent_layer = function (args) {
   var c = getCompById(args.compId);
   var l = getLayerById(c, args.layerId);
-  var newParent = null;
-  if (args.parentLayerId !== null && args.parentLayerId !== undefined) {
-    newParent = getLayerById(c, args.parentLayerId);
-  }
+  var newParent = __planParent(c, l, args.parentLayerId, "parent_layer");
   var preserve = args.preserveTransform !== false;
 
   if (!preserve) {
-    l.parent = newParent;
+    var jump = __parentJump(c, l, newParent);
     var plain = __layerSummary(l);
     plain.preserveTransform = false;
+    plain.localTransformUnchanged = jump.localTransformUnchanged;
+    if (!jump.localTransformUnchanged) plain.localPropertiesChanged = jump.localPropertiesChanged;
     return plain;
   }
+  var out = __layerSummary(l);
+  out.preserveTransform = true;
+  out.correction = __parentPreservingWorld(c, l, newParent);
+  return out;
+};
 
+// Assigns the parent and corrects AE's compensation where it is provably
+// wrong. Returns the correction record; the parent is always assigned.
+function __parentPreservingWorld(c, l, newParent) {
   var t = c.time;
   var notes = [];
   var before = __ptChain(l, t, 0);
@@ -550,8 +681,6 @@ OPS.parent_layer = function (args) {
   // The parenting itself always happens, whether or not we can check it.
   l.parent = newParent;
 
-  var out = __layerSummary(l);
-  out.preserveTransform = true;
   var corr = {
     applied: false,
     atTime: t,
@@ -563,21 +692,20 @@ OPS.parent_layer = function (args) {
     timeVarying: false,
     notes: notes
   };
-  out.correction = corr;
 
   if (!before.ok || !oldParent.ok) {
     notes.push("not corrected: " + (before.reason || oldParent.reason));
-    return out;
+    return corr;
   }
   var after = __ptChain(newParent, t, 0);
   if (!after.ok) {
     notes.push("not corrected: " + after.reason);
-    return out;
+    return corr;
   }
   var invAfter = __ptMInvert(after.m);
   if (!invAfter) {
     notes.push("not corrected: the new parent chain has a scale of 0 and cannot be inverted");
-    return out;
+    return corr;
   }
   corr.timeVarying = !!(before.animated || after.animated);
   if (corr.timeVarying) {
@@ -696,8 +824,8 @@ OPS.parent_layer = function (args) {
     }
   }
 
-  return out;
-};
+  return corr;
+}
 
 // Layers do not reorder with moveTo. `moveTo` is a PropertyBase method for
 // re-ranking a property inside an indexed group, and calling it on a Layer

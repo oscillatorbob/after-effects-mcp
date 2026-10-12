@@ -16,6 +16,7 @@ Numbered recipes referenced below are in [verification-recipes.md](verification-
 | `packages/jsx/core.jsx` | JSON polyfill (never used on AE 2026 — its JSON is native), the `dispatchValue(payload)` router and the `dispatch(payloadJson)` form that parses then calls it, `withUndo()` wrapper, `JOBS` table for chunked async. |
 | `packages/jsx/explore.jsx` | `get_layer_full` — the deep one-shot dump. The whole reason this MCP exists. Spend disproportionate care here. |
 | `packages/jsx/project.jsx` | The Project panel hierarchy. One deterministic tree order (name case-insensitively, then exactly, then id — never AE's index order, which moves under a rename), ancestry by id for cycle checks, and `__deletionImpact`, the read-only analysis `analyze_project_item_deletion` returns and `delete_project_item` acts on: it refuses whatever would reach a layer or Render Queue item outside the deletion, then verifies every removed id, the item count, the queue and the surviving comps' layers. See "The Project panel hierarchy" in [fragile-areas-ae.md](fragile-areas-ae.md). |
+| `packages/jsx/structure.jsx` | Composition structure: `get_layer_structure`, `move_layer`, `set_layer_parent`, `set_track_matte` and `precompose_layers`. Ids in, ids out; an index is only ever read immediately before the AE call that needs one (`precompose`), from layers just resolved by id. Every write is re-read by id. `__precomposeHazards` is the whole safety of precompose: it decides, before anything moves, every way AE would re-wire the comp without saying so (parent, matte, expression and layer-parameter references crossing the selection; 3D, locked, camera/light, adjustment-over-unselected) and refuses on any of them. The parenting preflight (`__planParent`), the jump (`__parentJump`) and the world-preserving correction (`__parentPreservingWorld`) live in `layers.jsx`, shared with `parent_layer`. See "Layer structure" in [fragile-areas-ae.md](fragile-areas-ae.md). |
 | `packages/jsx/snapshot.jsx` | The comp fingerprint and the diff of two of them. Backs `snapshot_comp` / `diff_comp` and the `diff:true` flag on `run_jsx` / `run_batch`. The diff is pure — two objects in, one out — which is what lets it be tested with no AE. |
 | `packages/jsx/batch.jsx` | `run_batch` for ≤500 ops inline in one undo group; otherwise registers a job and yields chunks via `_continue_job`, one undo group per chunk. `singleUndo:true` forces the inline path at any size up to 2000. |
 | `packages/jsx/vision.jsx` | `saveFrameToPng` wrapper. Returns a temp path; the panel base64-encodes. |
@@ -125,8 +126,9 @@ things are generated from that one declaration:
 | the sentence in the rejection | `crossFieldMessage` | the agent, when it breaks anyway |
 
 Three kinds cover everything so far: `exactlyOne`, `atMostOne`, `atLeastOne`.
-Five ops use them — `reorder_layer`, `screenshot_frame`, `run_jsx`,
-`set_temporal_ease`, `set_effect_param`.
+The ops that use them include `reorder_layer`, `move_layer`, `screenshot_frame`,
+`run_jsx`, `set_temporal_ease` and `set_effect_param`; `schema-constraints.mjs`
+prints the current count.
 
 Four things hold it together, and each is a way it could rot quietly:
 

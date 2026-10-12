@@ -55,6 +55,7 @@ bounded form is the one to reach for:
 | How is the Project panel organised? | `get_project_tree` — folders and items with ids, `parentFolderId`, `pathIds`; names repeat, so act on ids. Before deleting anything, `analyze_project_item_deletion`: After Effects deletes without asking and takes layers and Render Queue items with it |
 | What comps exist? | `list_comps({include: []})` — ids and names |
 | What is in this comp? | `list_layers({compId, include: []})` — id, index, name, type; `get_comp_tree` for the nesting |
+| How is this comp wired? | `get_layer_structure({compId})` — per layer its parent and children, track-matte source and users, source item, and the 3D/locked/shy/adjustment/guide flags, front to back |
 | Where is a layer, by name, type or effect? | `find_layers` — `{matches, count, compsSearched, included}`; a match is id, index, name, sourceType, compId and compName, and `include` (`flags`, `timing`, `parent` — the `list_layers` names) widens it. Unlike `list_layers`, omitting `include` here does **not** return everything |
 | One layer, in depth | `get_layer_full({compId, layerId, include: […]})` ⭐ |
 | What did my last change actually do? | `snapshot_comp` → `diff_comp` ⭐ |
@@ -97,13 +98,24 @@ position that **shifts whenever layers are added, deleted or reordered**. Store
 `(compId, layerId)` and pass those; an index captured before a `create_*` call
 may point at a different layer by the time you use it.
 
-`reorder_layer` is the op that shifts every index below it, so it takes
-**exactly one** destination and the id forms are the ones to use:
-`beforeLayerId` puts the layer directly in front of (above) that layer,
-`afterLayerId` directly behind it. `toIndex` is absolute — 1 is the front,
-`numLayers` the back — and means the index the layer **ends up at**, not the
-slot it displaces. Reach for it only when you genuinely mean "on top" or "at the
-back". The result carries `movedFrom` beside the landed `index`.
+`move_layer` is the op that shifts every index below it, so it takes
+**exactly one** destination, all by id: `beforeLayerId` puts the layer directly
+in front of (above) that layer, `afterLayerId` directly behind it, and
+`to: "beginning"` / `"end"` the front or back of the stack. The result carries
+`previousIndex`, `actualIndex` and the ids now above and below it. Prefer it
+for reordering; `reorder_layer` remains for backward compatibility and also
+takes an absolute `toIndex`. Likewise prefer `set_layer_parent` to parent and
+unparent; `parent_layer` remains for backward compatibility. Track mattes follow
+their source by id wherever it moves.
+
+**Precompose is the one structural op that changes ids.**
+`precompose_layers` with `moveAllAttributes: true` recreates every selected
+layer inside the new comp with a **new** id — `innerLayers` maps old to new —
+and replaces them with one new precomp layer, `precompLayerId`. It refuses,
+before anything changes, whenever After Effects would silently re-wire the comp:
+a parent, track matte, expression or layer-parameter that crosses the selection,
+a 3D or locked layer, a camera or light, or an adjustment layer left above
+unselected ones. Select both ends of a relationship, or break it first.
 
 ## Read, then write, then verify
 

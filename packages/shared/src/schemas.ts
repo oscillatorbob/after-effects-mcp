@@ -527,7 +527,13 @@ export const CreateLightLayer = z.object({
   intensity: z.number().optional(),
   position: VecAny.optional(),
 });
-export const DuplicateLayer = z.object({ compId: z.number(), layerId: z.number(), count: z.number().int().positive().default(1) });
+export const DuplicateLayer = z.object({
+  compId: z.number(),
+  layerId: z.number(),
+  count: z.number().int().positive().default(1),
+  newName: z.string().min(1).regex(/\S/).optional()
+    .describe("Name every copy this. Omit to keep After Effects' own \"<name> 2\" naming. Duplicate names are allowed, so keep the returned layerId. Refused on a locked layer, whose copy is locked too."),
+});
 export const DeleteLayer = z.object({ compId: z.number(), layerId: z.number() });
 export const SetLayer = z.object({
   compId: z.number(),
@@ -1069,6 +1075,63 @@ export const DeleteProjectItem = z
       ),
   })
   .strict();
+// ---------- layer structure ----------
+// structure.jsx. Every layer is named by id; an index is only ever reported.
+const StructLayerId = z.number().int().describe("A layer id from get_layer_structure or list_layers — never an index.");
+export const GetLayerStructure = z
+  .object({
+    compId: z.number(),
+    maxLayers: z.number().int().min(1).max(5000).default(500)
+      .describe("Stop listing after this many layers, front to back. Relationship lists (childLayerIds, matteForLayerIds) are always complete."),
+  })
+  .strict();
+export const MoveLayer = crossField(
+  z
+    .object({
+      compId: z.number(),
+      layerId: StructLayerId,
+      beforeLayerId: StructLayerId.optional().describe("Put the layer directly IN FRONT OF (above) this layer."),
+      afterLayerId: StructLayerId.optional().describe("Put the layer directly BEHIND (below) this layer."),
+      to: z.enum(["beginning", "end"]).optional().describe("beginning = index 1, in front of everything; end = the back of the stack."),
+    })
+    .strict(),
+  { kind: "exactlyOne", fields: ["beforeLayerId", "afterLayerId", "to"] }
+);
+export const SetLayerParent = z
+  .object({
+    compId: z.number(),
+    layerId: StructLayerId,
+    parentLayerId: StructLayerId.nullable().describe("The new parent, in the same comp. null unparents."),
+    preserveWorldTransform: z.boolean().default(true)
+      .describe("true (default): the layer stays where it is on screen — AE's compensation, checked and corrected (2D). false: the layer's own Position/Rotation/Scale values are kept exactly, so it jumps into the parent's space (AE's setParentWithJump)."),
+  })
+  .strict();
+export const SetTrackMatte = z
+  .object({
+    compId: z.number(),
+    targetLayerId: StructLayerId.describe("The layer that is matted."),
+    matte: z
+      .object({
+        sourceLayerId: StructLayerId.describe("The matte SOURCE layer, in the same comp, above or below the target. Nothing is reordered."),
+        type: z.enum(["ALPHA", "ALPHA_INVERTED", "LUMA", "LUMA_INVERTED"]),
+      })
+      .strict()
+      .nullable()
+      .describe("The matte to set, or null to clear the target's matte."),
+  })
+  .strict();
+export const PrecomposeLayers = z
+  .object({
+    compId: z.number(),
+    layerIds: z.array(StructLayerId).min(1).max(1000)
+      .describe("The layers to precompose, by id, in any order. Each at most once."),
+    name: ProjectItemName.describe("Name of the new comp. Duplicates are allowed, so keep the returned newCompId."),
+    moveAllAttributes: z.boolean().default(true)
+      .describe("true (default): the layers move into the new comp, sized like this one, and are recreated there with NEW ids. false: exactly one footage/solid/null/precomp layer keeps its id, effects, masks, keyframes, parent and matte here, and only its source moves into a comp sized to that source."),
+    parentFolderId: ProjectFolderId.optional()
+      .describe("Project folder for the new comp; 0 is the root. Omit to leave it where After Effects puts it — the folder this comp is in."),
+  })
+  .strict();
 export const FindLayers = z.object({
   compId: z.number().optional(),
   namePattern: z.string().optional(),
@@ -1578,6 +1641,11 @@ export const OpSchemas = {
   set_layer: SetLayer,
   parent_layer: ParentLayer,
   reorder_layer: ReorderLayer,
+  get_layer_structure: GetLayerStructure,
+  move_layer: MoveLayer,
+  set_layer_parent: SetLayerParent,
+  set_track_matte: SetTrackMatte,
+  precompose_layers: PrecomposeLayers,
   // transforms
   set_transform: SetTransform,
   // keyframes
@@ -1728,6 +1796,11 @@ export const OpMutation = {
   set_layer: "write",
   parent_layer: "write",
   reorder_layer: "write",
+  get_layer_structure: "read",
+  move_layer: "write",
+  set_layer_parent: "write",
+  set_track_matte: "write",
+  precompose_layers: "write",
   // transforms
   set_transform: "write",
   // keyframes

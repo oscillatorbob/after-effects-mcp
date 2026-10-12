@@ -72,7 +72,7 @@ coordinates and the keyframes they already had. To look at a world target `T`
 at zoom `s`: key the null's scale to `s` and its position to `C + (C − T)·s/100`,
 with `C` the comp centre. Children of a precomp layer get parented while that
 parent is at rest, and AE rewrites their position and divides their scale for
-you. `parent_layer` with `preserveTransform` does the arithmetic.
+you. `set_layer_parent` (default `preserveWorldTransform: true`) does the arithmetic.
 
 **The same rule for any parent: parent while it is at rest, and before it is
 keyed.** Keeping a child where it is means writing the inverse of the parent's

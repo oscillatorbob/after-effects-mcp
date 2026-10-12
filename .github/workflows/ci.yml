@@ -284,6 +284,13 @@ jobs:
       - name: Project hierarchy tools refuse destructive and cyclic changes
         run: node tests/unit/project-hierarchy.mjs
 
+      # Layer structure (move, duplicate, parent, track matte, precompose): ids
+      # stay canonical, cycles are refused before AE sees them, and a precompose
+      # that would silently re-parent, copy a matte or break an expression is
+      # refused against a stub that does the damage After Effects does.
+      - name: Layer structure tools refuse cycles and silent precompose damage
+        run: node tests/unit/layer-structure.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.

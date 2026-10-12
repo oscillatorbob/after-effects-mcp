@@ -142,8 +142,10 @@ that does it.
   inverse offset, re-parenting while the new parent is at identity.
 - **Set the parent first, the transform second.** Raw `layer.parent = x` does
   not reliably preserve where a layer sits two levels deep, so after scripted
-  parenting audit scale and rotation as well as position. *The tool already
-  does:* `parent_layer` with `preserveTransform`.
+  parenting audit scale and rotation as well as position. A plain
+  assignment *compensates*; `setParentWithJump` is the one that keeps the
+  local values and lets the layer jump. *The tool already does:*
+  `set_layer_parent` — both modes, cycles refused first.
 - **`app.executeCommand(id)` silently no-ops** through this bridge. Menu
   commands depend on host focus and the active selection, and the bridge has
   neither; the call returns without complaint and nothing happens. Use the API
@@ -156,7 +158,16 @@ that does it.
   `moveToEnd` — the first two take a **layer**, never an index, and the two
   directions need different primitives: moving up, `moveBefore` lands on the
   target; moving down the target shifts up as the layer leaves, so `moveAfter`
-  is the one that lands on it. *The tool already does:* `reorder_layer`.
+  is the one that lands on it. *The tool already does:* `move_layer`.
+- **`layers.precompose(indices, name, true)` recreates the layers.** Every
+  moved layer gets a new id inside the new comp and the old handles go
+  invalid. It also re-wires what crosses the selection without a word: a
+  parent left outside is dropped and baked in, children left outside are
+  re-parented to the precomp layer, a matte target's source is copied in, a
+  matte source's targets are re-pointed at the precomp layer, and an
+  outside expression's `layer(n)` silently resolves to a different layer.
+  `moveAllAttributes: false` is one layer only and keeps its id. *The tool
+  already does:* `precompose_layers`, which refuses every one of those cases.
 - **Assigning a track matte switches the matte layer's video off.** That is
   After Effects' own default, and `setTrackMatte` and `trackMatteType` both
   do it. A layer that is both a matte and visible art gets `enabled = true`

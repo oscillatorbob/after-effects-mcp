@@ -74,10 +74,22 @@ class MockLayer {
     this.staleParentMatrix = null;
   }
   property(n) {
-    assert.equal(n, "Transform");
     const self = this;
+    // "ADBE Transform Group" is how __transformSnapshot walks the group to prove
+    // a jump left the local values alone.
+    if (n === "ADBE Transform Group") {
+      const keys = Object.keys(self.props);
+      return {
+        numProperties: keys.length,
+        property: (i) => Object.assign(Object.create(Object.getPrototypeOf(self.props[keys[i - 1]])), self.props[keys[i - 1]], { matchName: keys[i - 1], valueAtTime: () => self.props[keys[i - 1]].value }),
+      };
+    }
+    assert.equal(n, "Transform");
     return { property: (k) => self.props[k] };
   }
+  // AE's setParentWithJump (measured on 26.5x89): the parent changes and the
+  // local values do not, so the layer jumps into the new parent's space.
+  setParentWithJump(p) { this._parent = p; }
   get parent() { return this._parent; }
   set parent(p) {
     const worldBefore = worldMatrix(this);
@@ -306,16 +318,22 @@ for (const model of ["layer-space", "anchor-relative"]) {
       passed++;
     }
 
-    // 6. preserveTransform:false keeps the old behaviour: no correction at all.
+    // 6. preserveTransform:false keeps the layer's own values — a jump, done
+    // with setParentWithJump, never the compensating `parent =` assignment
+    // (which AE compensates, so the old `false` was a no-op in all but name).
     {
       const s = twoLevelScene(anchors);
       const ops = loadOps(s.all);
       s.pb.parent = s.fig;
       s.bubA.staleParentMatrix = I();
+      const localBefore = JSON.stringify(Object.values(s.bubA.props).map((p) => p.v));
       const r = ops.parent_layer({ compId: 1, layerId: 3, parentLayerId: 2, preserveTransform: false });
       assert.equal(r.preserveTransform, false);
       assert.equal(r.correction, undefined, "preserveTransform:false must not report a correction");
-      passed += 2;
+      assert.equal(r.localTransformUnchanged, true);
+      assert.equal(JSON.stringify(Object.values(s.bubA.props).map((p) => p.v)), localBefore, "a jump must not touch the local values");
+      assert.equal(s.bubA.parent, s.pb);
+      passed += 5;
     }
   }
 }

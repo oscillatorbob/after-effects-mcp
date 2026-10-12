@@ -50,9 +50,10 @@ backwards is silent — no error, just a solid slab where the artwork should be.
 ordering the calls. If existing content is in the wrong order, rebuild it rather
 than reordering, and verify with a screenshot of a comp that **nests** it, not
 only the comp that owns it. None of this applies to the layer stack: moving
-whole layers is `reorder_layer`, a different mechanism with none of these
-caveats. The stack runs the other way: every new layer — `create_*`,
-`duplicate_layer`, a `layers.add*()` in a script — lands at index 1, on top,
+whole layers is `move_layer`, a different mechanism with none of these
+caveats. The stack runs the other way: every new layer — `create_*` or a
+`layers.add*()` in a script — lands at index 1, on top (a `duplicate_layer`
+copy lands directly above its original instead),
 so a stack is built **back-to-front**, the plate first and the label after,
 and a script re-run from the middle re-stacks whatever it recreates over what
 was already there.
