@@ -65,7 +65,10 @@ function __structureRecord(l, children, matteFor) {
     guideLayer: __flagOrNull(l, "guideLayer"),
     trackMatte: tm.layerId === null ? null : { sourceLayerId: tm.layerId, type: tm.type },
     isTrackMatte: matteFor[l.id] ? true : false,
-    matteForLayerIds: matteFor[l.id] || []
+    matteForLayerIds: matteFor[l.id] || [],
+    // startTime/inPoint/outPoint/stretch, the source's length and the Time
+    // Remap state (timing.jsx) — what set_layer_timing and set_time_remap act on.
+    timing: __timingRecord(l)
   };
 }
 
@@ -84,7 +87,7 @@ OPS.get_layer_structure = noUndo(function (args) {
   }
   var layers = [];
   for (var j = 1; j <= n && j <= max; j++) layers.push(__structureRecord(c.layer(j), children, matteFor));
-  var out = { compId: c.id, compName: c.name, numLayers: n, layers: layers, truncated: n > max };
+  var out = { compId: c.id, compName: c.name, numLayers: n, frameDuration: c.frameDuration, duration: c.duration, layers: layers, truncated: n > max };
   if (n > max) {
     out.truncation = { listed: max, omitted: n - max, nextUnlistedIndex: max + 1,
       note: "Layers are listed front to back; raise maxLayers to see the rest. childLayerIds and matteForLayerIds still name unlisted layers." };

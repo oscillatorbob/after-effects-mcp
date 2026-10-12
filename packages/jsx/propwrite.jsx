@@ -252,7 +252,7 @@ function __pwPlan(c, l, u) {
     return { problem: label + " is on an ambient light, whose Transform takes no values (it reports canSetExpression on X/Y Rotation and still refuses)" };
   }
 
-  var why = __pwHiddenReason(l, p, vt, "Time Remap is off on this layer (and once on, it is keyed, which this static tool refuses too)");
+  var why = __pwHiddenReason(l, p, vt, "Time Remap is off on this layer (set_time_remap turns it on; it is then keyed, which this static tool refuses too — use set_keyframes)");
   if (why) return { problem: label + ": " + why };
 
   var exprOn = __pwExpressionOn(p);

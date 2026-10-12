@@ -55,7 +55,7 @@ bounded form is the one to reach for:
 | How is the Project panel organised? | `get_project_tree` — folders and items with ids, `parentFolderId`, `pathIds`; names repeat, so act on ids. Before deleting anything, `analyze_project_item_deletion`: After Effects deletes without asking and takes layers and Render Queue items with it |
 | What comps exist? | `list_comps({include: []})` — ids and names |
 | What is in this comp? | `list_layers({compId, include: []})` — id, index, name, type; `get_comp_tree` for the nesting |
-| How is this comp wired? | `get_layer_structure({compId})` — per layer its parent and children, track-matte source and users, source item, and the 3D/locked/shy/adjustment/guide flags, front to back |
+| How is this comp wired? | `get_layer_structure({compId})` — per layer its parent and children, track-matte source and users, source item, the 3D/locked/shy/adjustment/guide flags, and its `timing` (start/in/out/stretch, source length, Time Remap state), front to back |
 | Where is a layer, by name, type or effect? | `find_layers` — `{matches, count, compsSearched, included}`; a match is id, index, name, sourceType, compId and compName, and `include` (`flags`, `timing`, `parent` — the `list_layers` names) widens it. Unlike `list_layers`, omitting `include` here does **not** return everything |
 | One layer, in depth | `get_layer_full({compId, layerId, include: […]})` ⭐ |
 | What did my last change actually do? | `snapshot_comp` → `diff_comp` ⭐ |
@@ -116,6 +116,16 @@ before anything changes, whenever After Effects would silently re-wire the comp:
 a parent, track matte, expression or layer-parameter that crosses the selection,
 a 3D or locked layer, a camera or light, or an adjustment layer left above
 unselected ones. Select both ends of a relationship, or break it first.
+
+**Timing is three different operations; pick the one you mean.**
+`set_layer_timing` takes seconds or whole frames (`inFrame`, …) and moves a
+layer three ways that are not interchangeable: `inPoint`/`outPoint` **trim**
+what is visible and move nothing else, `startTime` **slides** the whole layer
+with its keyframes, and `stretch` **retimes** playback and scales the keys.
+Which source frame plays when is Time Remap: `set_time_remap({enabled: true})`
+creates it, `set_keyframes` at `["ADBE Time Remapping"]` animates it.
+Disabling deletes every Time Remap key, so a customized one is refused unless
+the user agreed to lose it (`discardTimeRemap: true`).
 
 ## Read, then write, then verify
 

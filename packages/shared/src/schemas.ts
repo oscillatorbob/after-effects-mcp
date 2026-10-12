@@ -1132,6 +1132,43 @@ export const PrecomposeLayers = z
       .describe("Project folder for the new comp; 0 is the root. Omit to leave it where After Effects puts it — the folder this comp is in."),
   })
   .strict();
+// ---------- layer timing ----------
+// timing.jsx. Seconds or frames per field, never both for one field; frames
+// convert with the comp's own frameDuration, so 23.976 lands exactly.
+const TimingSeconds = (what: string) => z.number().describe(`${what}, in comp seconds.`);
+const TimingFrame = (what: string) => z.number().int().describe(`${what}, as a whole comp frame counted from time 0 (frame × the comp's frameDuration — exact at 23.976 and 29.97). Negative frames are allowed.`);
+// "At least one field" is the JSX's check (set_layer_timing refuses an empty
+// request before reading anything): an atLeastOne rule over all seven fields
+// would overlap the three atMostOne pairs, and overlapping rules cannot be
+// emitted as one JSON Schema the converter and zod agree on.
+export const SetLayerTiming = crossField(crossField(crossField(
+  z
+    .object({
+      compId: z.number(),
+      layerId: StructLayerId,
+      startTime: TimingSeconds("Where the layer's source time 0 sits in the comp. Moving it slides the WHOLE layer — inPoint, outPoint and every keyframe move with it").optional(),
+      startFrame: TimingFrame("startTime").optional(),
+      inPoint: TimingSeconds("Where the layer becomes visible (a trim). Moves no keyframes and does not retime the source").optional(),
+      inFrame: TimingFrame("inPoint").optional(),
+      outPoint: TimingSeconds("Where the layer stops being visible (a trim). Must be after inPoint").optional(),
+      outFrame: TimingFrame("outPoint").optional(),
+      stretch: z.number().min(1).max(9900).optional()
+        .describe("Time stretch in percent: 100 unchanged, 200 plays at half speed and twice as long, 50 at double speed. 1 to 9900. Scales inPoint, outPoint and every keyframe about startTime. Negative (reverse) is refused — use Time Remap to play backwards."),
+    })
+    .strict(),
+  { kind: "atMostOne", fields: ["startTime", "startFrame"], then: "startTime is seconds, startFrame is frames — pass one." }),
+  { kind: "atMostOne", fields: ["inPoint", "inFrame"], then: "inPoint is seconds, inFrame is frames — pass one." }),
+  { kind: "atMostOne", fields: ["outPoint", "outFrame"], then: "outPoint is seconds, outFrame is frames — pass one." }
+);
+export const SetTimeRemap = z
+  .object({
+    compId: z.number(),
+    layerId: StructLayerId,
+    enabled: z.boolean().describe("true creates After Effects' default Time Remap (two linear keys); false removes Time Remap and EVERY key on it."),
+    discardTimeRemap: z.boolean().default(false)
+      .describe("Only with enabled:false. Disabling a CUSTOMIZED Time Remap (keys moved or added, an expression) deletes that animation, so it is refused unless this is true. Leave false; set true only when the user has agreed to lose the Time Remap animation. Undo is the only way back."),
+  })
+  .strict();
 export const FindLayers = z.object({
   compId: z.number().optional(),
   namePattern: z.string().optional(),
@@ -1646,6 +1683,8 @@ export const OpSchemas = {
   set_layer_parent: SetLayerParent,
   set_track_matte: SetTrackMatte,
   precompose_layers: PrecomposeLayers,
+  set_layer_timing: SetLayerTiming,
+  set_time_remap: SetTimeRemap,
   // transforms
   set_transform: SetTransform,
   // keyframes
@@ -1801,6 +1840,8 @@ export const OpMutation = {
   set_layer_parent: "write",
   set_track_matte: "write",
   precompose_layers: "write",
+  set_layer_timing: "write",
+  set_time_remap: "write",
   // transforms
   set_transform: "write",
   // keyframes

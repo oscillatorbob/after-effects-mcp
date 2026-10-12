@@ -225,7 +225,7 @@ function load() {
   const ctx = {};
   vm.createContext(ctx);
   vm.runInContext(STUB, ctx, { filename: "stub" });
-  for (const f of ["core.jsx", "ids.jsx", "comps.jsx", "layers.jsx", "explore.jsx", "footage.jsx", "project.jsx", "structure.jsx"]) {
+  for (const f of ["core.jsx", "ids.jsx", "comps.jsx", "layers.jsx", "explore.jsx", "footage.jsx", "project.jsx", "structure.jsx", "timing.jsx"]) {
     vm.runInContext(read(f), ctx, { filename: f });
   }
   const run = (op, args) => JSON.parse(vm.runInContext(`JSON.stringify(dispatchValue(${JSON.stringify({ op, args })}))`, ctx));

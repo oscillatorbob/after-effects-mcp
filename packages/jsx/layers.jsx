@@ -403,6 +403,20 @@ OPS.set_layer = function (args) {
     ? __enumByName(BlendingMode, "BlendingMode", args.blendingMode, "blendingMode")
     : null;
   var matte = (args.trackMatte !== undefined) ? __planTrackMatte(c, l, args.trackMatte) : null;
+  // Timing goes through set_layer_timing's planner (timing.jsx): checked
+  // before anything is written, written in the measured order, read back and
+  // restored on failure. It used to be four bare assignments, which After
+  // Effects clamps or leaves out-before-in without a word. It runs before the
+  // other fields — after an unlock in the same call, before a lock.
+  var timingReq = null;
+  if (args.inPoint !== undefined || args.outPoint !== undefined || args.startTime !== undefined || args.stretch !== undefined) {
+    timingReq = { inPoint: args.inPoint, outPoint: args.outPoint, startTime: args.startTime, stretch: args.stretch };
+  }
+  var timingPlan = timingReq ? __planLayerTiming(c, l, timingReq, "set_layer", args.locked === false ? false : l.locked) : null;
+  if (timingPlan) {
+    if (args.locked === false && l.locked) l.locked = false;
+    __applyLayerTiming(timingPlan, "set_layer");
+  }
   if (args.name !== undefined) l.name = args.name;
   if (args.enabled !== undefined) l.enabled = args.enabled;
   if (args.locked !== undefined) l.locked = args.locked;
@@ -411,10 +425,6 @@ OPS.set_layer = function (args) {
   if (args.threeDLayer !== undefined) l.threeDLayer = args.threeDLayer;
   if (blend !== null) l.blendingMode = blend;
   if (args.label !== undefined) l.label = args.label;
-  if (args.inPoint !== undefined) l.inPoint = args.inPoint;
-  if (args.outPoint !== undefined) l.outPoint = args.outPoint;
-  if (args.startTime !== undefined) l.startTime = args.startTime;
-  if (args.stretch !== undefined) l.stretch = args.stretch;
   if (args.preserveTransparency !== undefined) l.preserveTransparency = args.preserveTransparency;
   var out = __layerSummary(l);
   if (matte !== null) out.trackMatte = __applyTrackMatte(c, l, matte);

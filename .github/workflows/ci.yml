@@ -291,6 +291,13 @@ jobs:
       - name: Layer structure tools refuse cycles and silent precompose damage
         run: node tests/unit/layer-structure.mjs
 
+      # Layer timing and Time Remap. After Effects clamps a trim to the source,
+      # drags outPoint when inPoint moves and deletes every Time Remap key on
+      # disable — all without a word — so each guard runs against a stub that
+      # does exactly that.
+      - name: Layer timing refuses silent clamps and never discards custom Time Remap
+        run: node tests/unit/layer-timing.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.

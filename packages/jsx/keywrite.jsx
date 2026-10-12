@@ -502,7 +502,7 @@ function __kwPlanTrack(c, l, track, fd, timeBase) {
   if (__isAmbientLight(l) && __pwTopGroup(p) === "ADBE Transform Group") {
     return { problems: [label + " is on an ambient light, whose Transform takes no values"] };
   }
-  var why = __pwHiddenReason(l, p, vt, "Time Remap is off on this layer — turn it on first (it then starts with two keys, which replace or merge can rework)");
+  var why = __pwHiddenReason(l, p, vt, "Time Remap is off on this layer — turn it on first with set_time_remap (it then starts with two keys, which replace or merge can rework)");
   if (why) return { problems: [label + ": " + why] };
   if (track.mode !== "merge" && track.mode !== "replace") return { problems: ["`mode` must be \"merge\" or \"replace\", got " + __pwJson(track.mode)] };
   if (!__pwIsArray(track.keys) || track.keys.length < 1) return { problems: ["needs at least one key"] };

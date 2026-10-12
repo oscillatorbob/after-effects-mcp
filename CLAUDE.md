@@ -33,7 +33,7 @@ table is how that one went stale once already.
 
 ## What this project is
 
-An MCP server that lets an LLM drive Adobe After Effects 2026: comps, layers, transforms, keyframes (with full interpolation/easing/tangent control), expressions, effects, text, shapes, masks, markers, footage import, audio cue placement, comp snapshots and diffs, Motion Graphics template export, one-off screenshots and contact sheets, bulk batches, Project panel folders and safe deletion, layer structure (move, duplicate, parent, track matte, precompose). 95 tools. macOS and Windows — the only two platforms AE runs on.
+An MCP server that lets an LLM drive Adobe After Effects 2026: comps, layers, transforms, keyframes (with full interpolation/easing/tangent control), expressions, effects, text, shapes, masks, markers, footage import, audio cue placement, comp snapshots and diffs, Motion Graphics template export, one-off screenshots and contact sheets, bulk batches, Project panel folders and safe deletion, layer structure (move, duplicate, parent, track matte, precompose), layer timing and Time Remap. 97 tools. macOS and Windows — the only two platforms AE runs on.
 
 It ships five ways, and the ordering below is deliberate — it goes from least to most that the user has to already have installed:
 
@@ -85,6 +85,7 @@ One line each. The annotated version — why each file is the way it is — is i
 | `packages/jsx/snapshot.jsx` | The comp fingerprint and the diff of two of them. Pure, so testable with no AE. |
 | `packages/jsx/project.jsx` | The Project panel hierarchy: `get_project_tree`, folders, rename, move, and `delete_project_item`, which refuses any deletion that would reach beyond what it analyzed — After Effects' own `remove()` takes layers and Render Queue items without asking. Ids only; 0 is the root. |
 | `packages/jsx/structure.jsx` | Layer structure: `get_layer_structure`, `move_layer`, `set_layer_parent`, `set_track_matte`, `precompose_layers`. Ids only. `precompose_layers` refuses every case where After Effects would re-wire the comp silently — moveAll:true recreates the moved layers with new ids. |
+| `packages/jsx/timing.jsx` | `set_layer_timing` / `set_time_remap`, and the timing record `get_layer_structure` carries. One planner shared with `set_layer`'s timing fields: checked before the first write, written stretch → startTime → inPoint → outPoint (inPoint drags outPoint), read back, restored on failure. Disabling a customized Time Remap is refused — it deletes every key. |
 | `packages/jsx/batch.jsx` | `run_batch` — inline under 500 ops, otherwise a chunked job. |
 | `packages/jsx/vision.jsx` | `saveFrameToPng` wrapper, the resolution factor, contact-sheet tiles. |
 | `packages/jsx/footage.jsx` | Import, footage layers, the SVG viewBox check, the shared solid/`usedIn` helpers. |

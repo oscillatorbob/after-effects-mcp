@@ -262,8 +262,9 @@ as a script, so they are in the `shapes` topic. The raw-scripting traps:
   `addKeys`) throws `Can not "set value at time" with this property, because
   the property or a parent property is hidden`, the script dies there, and the
   layer is left remap-enabled with no keys. Setting `timeRemapEnabled = true`
-  already creates the two keys a loop needs — `[inPoint, 0]` and
-  `[inPoint + source duration, source duration]` — so there is no reason to
+  already creates the two keys a loop needs — `[startTime, 0]` and
+  `[startTime + source duration × stretch/100, source duration]`, wherever the
+  layer is trimmed (`set_time_remap` does it and returns them) — so there is no reason to
   clear them: edit those keys in place, or put an expression over them —
   `(time - startTime) % thisLayer.source.duration` loops — which overrides
   them without touching them. If your keys must sit at other times, add them

@@ -87,6 +87,17 @@ the parent's scale when the parent is a scaled precomp. Either way, read the
 child's position, scale and rotation back before trusting them; the result's
 `correction` says what was rewritten.
 
+**Retime with Time Remap, not stretch, whenever the speed changes inside the
+shot.** `set_time_remap({compId, layerId, enabled: true})` on a footage or
+precomp layer returns AE's two default keys — `(startTime, 0)` and
+`(startTime + source length, source length)` — and the path
+`["ADBE Time Remapping"]`; key it with `set_keyframes`, values in source
+seconds: a freeze is two keys with one value, a reverse runs from the source
+end to `0`, a speed ramp is an ease. `stretch` (in `set_layer_timing`) is one
+constant speed for the whole layer and scales every key with it; a negative
+stretch is refused. Turning Time Remap off throws the keys away — the tool
+refuses that on a customized one unless told `discardTimeRemap: true`.
+
 **A parent mirrored with a negative scale mirrors its children, text included.**
 A rig flipped with scale `[−100, 100]` shows every label backwards. Flip a text
 child back with its own negative x scale about its own anchor — centre-justified,
