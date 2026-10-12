@@ -7,7 +7,8 @@
 // "Keyframe writes"); the facts that decide its shape:
 //
 //   * Key times are composition seconds, and frame * comp.frameDuration lands
-//     exactly on the frame: AE snaps 23.976 to 24000/1001, and keyTime/
+//     on the frame: AE makes a 23.976 comp's frameDuration 1/23.976
+//     (0.04170837504171 — given 23.976 or 24000/1001 alike), and keyTime/
 //     frameDuration reads back the integer to 1e-13 at 23.976, 24, 29.97, 30,
 //     25 and 59.94. frameRate is float32 (23.9759979248047) and is never used.
 //   * AE merges two keys closer than ~2.5e-5 s into one, keeps any fractional
@@ -53,7 +54,10 @@
 // up, a setter only where the key differs, keys checked as they are read
 // rather than collected, and new keys with no metadata sharing one spec.
 
-var __KW_TIME_TOL = 1e-4;          // seconds: duplicate, match and readback tolerance
+// Slack for the comp-range check only (a last frame × frameDuration can exceed
+// the duration by a rounding error). Never used to decide that two times are
+// one key — see "Stored key times" below.
+var __KW_RANGE_EPS = 1e-9;
 var __KW_MAX_TRACKS = 100;
 var __KW_MAX_KEYS_PER_TRACK = 5000;
 var __KW_MAX_TOTAL_KEYS = 10000;
@@ -82,18 +86,150 @@ function __kwEaseDims(vt) {
   return 1;
 }
 
-// Index of the entry of `list` whose time (read by `get`) is within tolerance
-// of t, or -1. Every key list here is sorted — AE keeps keys in time order —
+// Index of the entry of `list` whose stored time (read by `field`) is exactly
+// t, or -1. Exact, because both sides are times After Effects itself stored
+// (see below). Every key list here is sorted — AE keeps keys in time order —
 // so lookups are binary searches.
 function __kwSearch(list, t, field) {
   var lo = 0, hi = list.length - 1;
   while (lo <= hi) {
     var mid = (lo + hi) >> 1;
     var d = list[mid][field] - t;
-    if (Math.abs(d) <= __KW_TIME_TOL) return mid;
+    if (d === 0) return mid;
     if (d < 0) lo = mid + 1; else hi = mid - 1;
   }
   return -1;
+}
+// The same over a plain sorted array of times.
+function __kwHasTime(times, t) {
+  var lo = 0, hi = times.length - 1;
+  while (lo <= hi) {
+    var mid = (lo + hi) >> 1;
+    if (times[mid] === t) return true;
+    if (times[mid] < t) lo = mid + 1; else hi = mid - 1;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------- stored key times
+// Where After Effects stores a key time — measured on 26.5x89 (recipe 61). It
+// rounds the time to float32, then to a grid whose step depends on the comp's
+// frame rate (24576 steps/s at 12/24/48 fps, 25600 at 25/50/100, 30720 at
+// 15/30/60/120, 32768 at 1, 35840 at 17.5, and 23976 — a step of 1/23976 s,
+// frameDuration/1000 at 23.976 — at every NTSC rate) and on the layer's stretch (not its start time). A time on
+// an existing key's step updates that key; one step away is a different key —
+// at 30 fps, 1 s and 1 + 2/30720 s are two keys. No formula covers every rate,
+// and the fixed 1e-4 s this module used to match with took those two for one
+// (a merge silently overwrote the key at 1 s). So two times are never judged
+// the same key by distance: After Effects is asked. A scratch comp with the
+// target comp's frameDuration, holding a text layer with the target layer's
+// start time and stretch, stores exactly the doubles the target stores
+// (144/144 bit-identical across 23.976/25/30/60 fps, stretch 61–250%,
+// times to 900 s). "Same key" is "stored at the same time there". The scratch
+// comp lives for one set_keyframes call and is removed before it returns.
+function __kwOracleOpen(c) {
+  var o = { comp: null, layer: null, prop: null, st: null, sx: null };
+  o.comp = app.project.items.addComp("__ae_mcp_key_time_probe__", 4, 4, 1, Math.max(c.duration, 1), 30);
+  try {
+    o.comp.frameDuration = c.frameDuration;
+    if (o.comp.frameDuration !== c.frameDuration) {
+      throw new Error("a scratch comp took frameDuration " + o.comp.frameDuration + " for this comp's " + c.frameDuration + ", so where After Effects stores key times here could not be determined");
+    }
+    o.layer = o.comp.layers.addText("key time probe");
+    o.prop = o.layer.property("ADBE Transform Group").property("ADBE Rotate Z");
+  } catch (e) {
+    var left = __kwOracleClose(o);
+    if (left) e.cleanup = left;
+    throw e;
+  }
+  return o;
+}
+// Remove the scratch comp. Returns null once it is gone, or — when After
+// Effects would not remove it — a sentence naming it, so the caller can say so
+// rather than leave an unexplained comp in the user's project.
+function __kwOracleClose(o) {
+  if (!o || !o.comp) return null;
+  var cmp = o.comp, id = null, name = "__ae_mcp_key_time_probe__";
+  o.comp = null;
+  try { id = cmp.id; name = cmp.name; } catch (eI) {}
+  var why = null;
+  try { cmp.remove(); } catch (e) { why = __pwMsg(e); }
+  if (why === null) {
+    // Confirmed, not assumed: the item must be gone from the project.
+    var still = false;
+    try { still = id !== null && itemByIdOrNull(id) !== null; } catch (eL) { still = false; }
+    if (!still) return null;
+    why = "After Effects accepted remove() but the item is still in the project";
+  }
+  return "Cleanup FAILED: the scratch comp \"" + name + "\"" + (id !== null ? " (project item id " + id + ")" : "") +
+    " that this call made to check where After Effects stores key times could not be removed (" + why + ") and is still in the project. " +
+    "It holds no animation of yours — delete it with delete_project_item" + (id !== null ? "({itemId: " + id + "})" : "") +
+    ". Do not re-send this set_keyframes request because of it.";
+}
+// What happened to the requested animation, for a message that also has to
+// report a cleanup failure.
+function __kwOutcomeSentence(outcome) {
+  if (outcome === "refused") return "None of your animation was changed: the request was refused before anything was written.";
+  if (outcome === "rolled back") return "Your animation is as it was: what this call wrote was rolled back.";
+  if (outcome === "rollback incomplete") return "Your animation was NOT fully restored, as described above.";
+  return "The state of your animation is as the error above describes.";
+}
+function __kwOracleTiming(o, l) {
+  var st = l.startTime, sx = l.stretch;
+  if (o.st === st && o.sx === sx) return;
+  o.layer.startTime = st;
+  o.layer.stretch = sx;
+  if (o.layer.startTime !== st || o.layer.stretch !== sx) {
+    throw new Error("a scratch layer could not take this layer's start time " + st + " and stretch " + sx + ", so where After Effects stores its key times could not be determined");
+  }
+  o.st = st; o.sx = sx;
+}
+// Where After Effects stores each of `times` (ascending) on layer l: result[i]
+// is that stored time, or null when a later entry of the same list lands on
+// the same key (After Effects keeps one key per stored time).
+function __kwStoredTimes(o, l, times) {
+  __kwOracleTiming(o, l);
+  var p = o.prop;
+  while (p.numKeys > 0) p.removeKey(p.numKeys);
+  var vals = [], out = [], i;
+  for (i = 0; i < times.length; i++) { vals.push(i); out.push(null); }
+  if (times.length) p.setValuesAtTimes(times, vals);
+  // Each key's value is the index of the request it holds. Rounded: on a
+  // stretched layer After Effects can read a value back a hair off (Rotation 2
+  // at 599.37 s, stretch 61%, read 1.99999986734146 — recipe 61), and an exact
+  // lookup then took two distinct keys for one.
+  for (var k = 1; k <= p.numKeys; k++) {
+    var j = Math.round(p.keyValue(k));
+    if (j >= 0 && j < out.length) out[j] = p.keyTime(k);
+  }
+  while (p.numKeys > 0) p.removeKey(p.numKeys);
+  return out;
+}
+// A time After Effects stores exactly at kt on layer l, or null. Usually kt
+// itself; but on a stretched layer far from 0, writing a key's own stored time
+// can land one step away (measured: 30 fps, stretch 61%, 599.37 s), so a
+// restore searches — the stored time never decreases as the requested one grows.
+function __kwWriteTimeFor(o, l, kt) {
+  var s = __kwStoredTimes(o, l, [kt])[0];
+  if (s === kt) return kt;
+  var d = Math.abs(s - kt) || 1e-6;
+  var lo = s < kt ? kt : kt - d, hi = s < kt ? kt + d : kt;
+  for (var w = 0; w < 12; w++) {
+    var sl = __kwStoredTimes(o, l, [lo])[0], sh = __kwStoredTimes(o, l, [hi])[0];
+    if (sl === kt) return lo;
+    if (sh === kt) return hi;
+    if (sl < kt && sh > kt) break;
+    if (sl >= kt) lo -= d;
+    if (sh <= kt) hi += d;
+    d *= 2;
+  }
+  for (var b = 0; b < 64; b++) {
+    var mid = (lo + hi) / 2;
+    var sm = __kwStoredTimes(o, l, [mid])[0];
+    if (sm === kt) return mid;
+    if (sm < kt) lo = mid; else hi = mid;
+  }
+  return null;
 }
 
 // Eases are kept flat — [speed0, influence0, speed1, influence1, …] — one
@@ -387,7 +523,7 @@ function __kwValueOf(s, vt) { return __pwSerialize(vt, s.raw); }
 function __kwKeyMismatches(s, e, vt) {
   var bad = [];
   var spec = e.s;
-  if (Math.abs(s.t - e.wt) > __KW_TIME_TOL) bad.push("time reads " + s.t + ", asked " + e.wt);
+  if (s.t !== e.st) bad.push("time reads " + s.t + ", where After Effects stores " + e.t + " is " + e.st);
   var want = e.wv !== undefined ? e.wv : e.w;
   var got = __kwValueOf(s, vt);
   if (!__pwSame(want, got)) bad.push("value reads " + __pwJson(got) + ", asked " + __pwJson(want));
@@ -409,7 +545,7 @@ function __kwKeyMismatches(s, e, vt) {
 // auto-Bezier key, which AE recomputes.
 function __kwUntouchedMismatches(s, o, vt) {
   var bad = [];
-  if (Math.abs(s.t - o.t) > __KW_TIME_TOL) bad.push("time moved from " + o.t + " to " + s.t);
+  if (s.t !== o.t) bad.push("time moved from " + o.t + " to " + s.t);
   var was = __kwValueOf(o, vt), is = __kwValueOf(s, vt);
   if (!__pwSame(was, is)) bad.push("value changed from " + __pwJson(was) + " to " + __pwJson(is));
   if (s.inI !== o.inI || s.outI !== o.outI) bad.push("interpolation changed from " + o.inI + "/" + o.outI + " to " + s.inI + "/" + s.outI);
@@ -424,7 +560,7 @@ function __kwUntouchedMismatches(s, o, vt) {
 
 // Whether key state `s` differs in anything this tool writes from `o`.
 function __kwStateDiffers(o, s, vt) {
-  if (Math.abs(o.t - s.t) > __KW_TIME_TOL || !__pwSame(__kwValueOf(o, vt), __kwValueOf(s, vt)) || o.inI !== s.inI || o.outI !== s.outI ||
+  if (o.t !== s.t || !__pwSame(__kwValueOf(o, vt), __kwValueOf(s, vt)) || o.inI !== s.inI || o.outI !== s.outI ||
     o.tc !== s.tc || o.tab !== s.tab || o.label !== s.label || !__kwSameEase(o.easeIn, s.easeIn) || !__kwSameEase(o.easeOut, s.easeOut)) return true;
   if (o.sab !== undefined && (o.sab !== s.sab || o.sc !== s.sc || !__kwSameVec(o.inT, s.inT) || !__kwSameVec(o.outT, s.outT))) return true;
   return false;
@@ -486,7 +622,7 @@ function __kwMaskCountProblems(plan, original, keys, label) {
 
 // Check one track and decide everything it will write. Nothing here writes.
 // Returns {problems: [...]} or a plan.
-function __kwPlanTrack(c, l, track, fd, timeBase) {
+function __kwPlanTrack(c, l, track, fd, timeBase, oracle) {
   var p;
   try { p = walkProperty(l, track.path); } catch (eW) { return { problems: [__pwMsg(eW)] }; }
   if (__itIsGroup(p)) {
@@ -542,30 +678,53 @@ function __kwPlanTrack(c, l, track, fd, timeBase) {
       t = key.time;
     }
     var entry = { i: i, t: t };
-    if (t < -__KW_TIME_TOL || t > c.duration + __KW_TIME_TOL) {
+    if (t < -__KW_RANGE_EPS || t > c.duration + __KW_RANGE_EPS) {
       problems.push(__kwAt(plan, entry) + " is outside the comp (0 to " + c.duration + "s" + (timeBase === "frames" ? ", frames 0 to " + __kwFrameOf(c.duration, fd) : "") + ")");
       continue;
     }
     var val = __kwValue(l, p, vt, key.value, t, rc);
     if (val.problem) { problems.push(__kwAt(plan, entry) + ": " + label + " " + val.problem); continue; }
-    // An existing key at that time: a merge updates it (keeping what is not
-    // passed); a replace overwrites it with a fully specified key. Either way
-    // the write uses its exact time, so AE replaces it.
-    var match = __kwSearch(original.keys, t, "t");
-    var meta = __kwMeta(key, info, (match >= 0 && track.mode === "merge") ? original.keys[match] : null);
-    if (meta.problem) { problems.push(__kwAt(plan, entry) + ": " + meta.problem); continue; }
-    entry.wt = match >= 0 ? original.keys[match].t : t;
     entry.w = val.write;
     if (val.want !== undefined) entry.wv = val.want;
-    entry.s = meta.spec;
-    entry.m = match;
+    entry.key = key;
     keys.push(entry);
   }
   keys.sort(function (a, b) { return a.t - b.t; });
-  for (var d = 1; d < keys.length; d++) {
-    if (keys[d].t - keys[d - 1].t <= __KW_TIME_TOL) {
-      problems.push(__kwAt(plan, keys[d]) + " lands on the same time as " + __kwAt(plan, keys[d - 1]) + " — After Effects keeps one key per time; pass one");
+
+  // Where After Effects will store each key, asked of After Effects itself
+  // (see "Stored key times"). Two requests it stores at one time are one key;
+  // a request it stores at an existing key's time IS that key — and nothing
+  // closer than that counts, however close.
+  if (keys.length) {
+    var times = [];
+    for (var q = 0; q < keys.length; q++) times.push(keys[q].t);
+    var stored;
+    try { stored = __kwStoredTimes(oracle, l, times); }
+    catch (eO) { return { problems: [label + ": " + __pwMsg(eO)] }; }
+    for (var d = 0; d < keys.length; d++) {
+      if (stored[d] === null) {
+        var other = keys[d + 1] || keys[d - 1];
+        problems.push(__kwAt(plan, keys[d]) + " lands on the same After Effects key as " + (other ? __kwAt(plan, other) : "another key of this track") + " (After Effects stores both at one time on this layer and keeps one key there) — pass one");
+        continue;
+      }
+      keys[d].st = stored[d];
     }
+  }
+  for (var e2 = 0; e2 < keys.length; e2++) {
+    var en = keys[e2];
+    if (en.st === undefined) continue;
+    // An existing key stored at that time: a merge updates it (keeping what is
+    // not passed); a replace overwrites it with a fully specified key. The
+    // write still goes at the REQUESTED time — After Effects lands it on that
+    // key — so a prediction that were ever wrong shows up in the readback as a
+    // key count that does not add up, never as a silent write elsewhere.
+    var match = __kwSearch(original.keys, en.st, "t");
+    var meta = __kwMeta(en.key, info, (match >= 0 && track.mode === "merge") ? original.keys[match] : null);
+    if (meta.problem) { problems.push(__kwAt(plan, en) + ": " + meta.problem); continue; }
+    en.wt = en.t;
+    en.s = meta.spec;
+    en.m = match;
+    delete en.key;
   }
   if (!problems.length && p.matchName === "ADBE Mask Shape") {
     var mc = __kwMaskCountProblems(plan, original, keys, label);
@@ -597,28 +756,27 @@ function __kwPlanTrack(c, l, track, fd, timeBase) {
 
 // ---------------------------------------------------------------- write
 
-// Write `values` at `times` (both sorted), then — when asked — remove every
-// other key, so a Time Remap never passes through zero keys. A time meant to
-// land on an existing key is that key's exact time, so AE replaces it rather
-// than adding a neighbour.
-function __kwReconcile(p, times, values, removeOthers) {
+// Write `values` at `times` (both sorted), then — when `keep` is given —
+// remove every key not stored at one of the times in `keep` (sorted, exact
+// stored times), so a Time Remap never passes through zero keys. A neighbour
+// one storage step from a written key is a different key and goes.
+function __kwReconcile(p, times, values, keep) {
   p.setValuesAtTimes(times, values);
-  if (!removeOthers) return;
-  // Both lists are sorted: walk them together from the end.
-  var j = times.length - 1;
+  if (!keep) return;
   for (var k = p.numKeys; k >= 1; k--) {
-    var kt = p.keyTime(k);
-    while (j >= 0 && times[j] - kt > __KW_TIME_TOL) j--;
-    if (j >= 0 && Math.abs(times[j] - kt) <= __KW_TIME_TOL) continue;
-    p.removeKey(k);
+    if (!__kwHasTime(keep, p.keyTime(k))) p.removeKey(k);
   }
 }
 
 function __kwApplyTrack(plan) {
   var p = walkProperty(plan.layer, plan.path);
   var times = [], values = [];
-  for (var i = 0; i < plan.keys.length; i++) { times.push(plan.keys[i].wt); values.push(plan.keys[i].w); }
-  __kwReconcile(p, times, values, plan.mode === "replace");
+  var keep = plan.mode === "replace" ? [] : null;
+  for (var i = 0; i < plan.keys.length; i++) {
+    times.push(plan.keys[i].wt); values.push(plan.keys[i].w);
+    if (keep) keep.push(plan.keys[i].st);
+  }
+  __kwReconcile(p, times, values, keep);
   // Indices are computed, not looked up: after a replace the keys are exactly
   // the plan's; after a merge they are the plan's and the untouched originals,
   // interleaved in time order.
@@ -627,11 +785,11 @@ function __kwApplyTrack(plan) {
   for (var j = 0; j < plan.keys.length; j++) {
     var e = plan.keys[j];
     if (plan.mode === "merge") {
-      while (o < orig.length && orig[o].t < e.wt - __KW_TIME_TOL) { if (!plan.used[o]) before++; o++; }
+      while (o < orig.length && orig[o].t < e.st) { if (!plan.used[o]) before++; o++; }
     }
     var k = j + 1 + before;
-    if (k > p.numKeys || Math.abs(p.keyTime(k) - e.wt) > __KW_TIME_TOL) {
-      throw new Error(__kwAt(plan, e) + ": the key written at " + e.wt + "s is not where it should be (index " + k + ")");
+    if (k > p.numKeys || p.keyTime(k) !== e.st) {
+      throw new Error(__kwAt(plan, e) + ": the key written at " + e.wt + "s is not where After Effects stores that time (" + e.st + "s, index " + k + ")");
     }
     __kwApplyMeta(p, k, e.s, plan.info);
   }
@@ -652,7 +810,7 @@ function __kwVerifyTrack(plan, fd) {
     var s = __kwReadKey(p, k, plan.spatial);
     if (k === 1) out.first = __kwEnd(s, plan.vt, fd, plan.timeBase);
     if (k === n) out.last = __kwEnd(s, plan.vt, fd, plan.timeBase);
-    if (j < plan.keys.length && Math.abs(s.t - plan.keys[j].wt) <= __KW_TIME_TOL) {
+    if (j < plan.keys.length && s.t === plan.keys[j].st) {
       var e = plan.keys[j];
       var bad = __kwKeyMismatches(s, e, plan.vt);
       if (bad.length) problems.push(__kwAt(plan, e) + ": " + bad.join("; "));
@@ -662,7 +820,7 @@ function __kwVerifyTrack(plan, fd) {
     }
     if (plan.mode === "merge") {
       while (o < orig.length && plan.used[o]) o++;
-      if (o < orig.length && Math.abs(orig[o].t - s.t) <= __KW_TIME_TOL) {
+      if (o < orig.length && orig[o].t === s.t) {
         var ok = orig[o];
         var bad2 = __kwUntouchedMismatches(s, ok, plan.vt);
         if (bad2.length) problems.push("untouched key at " + ok.t + "s: " + bad2.join("; "));
@@ -728,7 +886,7 @@ function __kwRestoreKeyMeta(p, k, s, info) {
 
 // Put one track's animation back as captured, then read it back. Returns the
 // list of what still differs.
-function __kwRestoreTrack(plan) {
+function __kwRestoreTrack(plan, oracle) {
   var p = walkProperty(plan.layer, plan.path);
   var o = plan.original;
   var bad = [];
@@ -736,9 +894,18 @@ function __kwRestoreTrack(plan) {
     while (p.numKeys > 0) p.removeKey(p.numKeys);
     p.setValue(o.staticRaw);
   } else {
-    var times = [], values = [];
-    for (var i = 0; i < o.keys.length; i++) { times.push(o.keys[i].t); values.push(o.keys[i].raw); }
-    __kwReconcile(p, times, values, true);
+    // Each key goes back at a time After Effects stores exactly at its
+    // original stored time — usually that time itself; on a stretched layer
+    // far from 0 a searched one (see __kwWriteTimeFor). Every original time is
+    // kept; anything else this call made is removed.
+    var times = [], values = [], keep = [];
+    for (var i = 0; i < o.keys.length; i++) {
+      var wt = null;
+      try { wt = __kwWriteTimeFor(oracle, plan.layer, o.keys[i].t); } catch (eW) { wt = null; }
+      if (wt === null) { bad.push("key " + (i + 1) + " (" + o.keys[i].t + "s): no time could be found that After Effects stores there, so it was written at its own time"); wt = o.keys[i].t; }
+      times.push(wt); values.push(o.keys[i].raw); keep.push(o.keys[i].t);
+    }
+    __kwReconcile(p, times, values, keep);
     // Key by key, so one that cannot be restored does not stop the rest.
     for (var k = 1; k <= o.keys.length && k <= p.numKeys; k++) {
       try { __kwRestoreKeyMeta(p, k, o.keys[k - 1], plan.info); }
@@ -756,7 +923,7 @@ function __kwRestoreTrack(plan) {
       var was = o.keys[q - 1];
       var is = __kwReadKey(p2, q, plan.spatial);
       var m = [];
-      if (Math.abs(is.t - was.t) > __KW_TIME_TOL) m.push("time");
+      if (is.t !== was.t) m.push("time (reads " + is.t + ")");
       if (!__pwSame(__kwValueOf(was, plan.vt), __kwValueOf(is, plan.vt))) m.push("value");
       if (is.inI !== was.inI || is.outI !== was.outI) m.push("interpolation");
       if (is.tc !== was.tc || is.tab !== was.tab) m.push("temporal flags");
@@ -780,14 +947,14 @@ function __kwRestoreTrack(plan) {
   return bad;
 }
 
-function __kwRollback(touched) {
+function __kwRollback(touched, oracle) {
   var notes = [];
   var clean = true;
   for (var i = touched.length - 1; i >= 0; i--) {
     var plan = touched[i];
     var where = "track " + plan.trackNumber + " (" + plan.label + ")";
     try {
-      var bad = __kwRestoreTrack(plan);
+      var bad = __kwRestoreTrack(plan, oracle);
       if (bad.length) { clean = false; notes.push(where + " NOT fully restored: " + bad.slice(0, 6).join("; ") + (bad.length > 6 ? " (+" + (bad.length - 6) + " more)" : "")); }
       else notes.push(where + " restored (" + plan.original.numKeys + " key" + (plan.original.numKeys === 1 ? "" : "s") + ")");
     } catch (e) {
@@ -848,6 +1015,31 @@ OPS.set_keyframes = function (args) {
     throw new Error("set_keyframes: " + __kwJoinProblems(baseProblems) + ". Nothing was changed.");
   }
 
+  // Where After Effects stores key times is asked of a scratch comp (see
+  // "Stored key times"); it exists only for this call, success or failure.
+  var oracle;
+  try { oracle = __kwOracleOpen(c); }
+  catch (eOpen) {
+    throw new Error("set_keyframes: the key-time check could not be prepared (" + __pwMsg(eOpen) + "). The animation was not applied — nothing was written to any of your properties." + (eOpen.cleanup ? " " + eOpen.cleanup : ""));
+  }
+  var result = null, failure = null;
+  try { result = __kwSetKeyframes(c, tracks, fd, timeBase, total, started, oracle); }
+  catch (eRun) { failure = eRun; }
+  var leftover = __kwOracleClose(oracle);
+  if (failure) {
+    // The original error stays first and whole; the cleanup is added to it.
+    if (!leftover) throw failure;
+    throw new Error(__pwMsg(failure) + " " + __kwOutcomeSentence(oracle.outcome) + " " + leftover);
+  }
+  if (leftover) {
+    result.scratchCompLeftover = true;
+    result.warning = "The animation WAS applied, exactly as the tracks above report. " + leftover;
+  }
+  return result;
+};
+
+function __kwSetKeyframes(c, tracks, fd, timeBase, total, started, oracle) {
+  oracle.outcome = "refused";
   // ---- Preflight: every track, every key, nothing written ----
   var plans = [], problems = [], seen = {};
   for (var i = 0; i < tracks.length; i++) {
@@ -856,7 +1048,7 @@ OPS.set_keyframes = function (args) {
     if (!__pwIsArray(tr.path) || !tr.path.length) { problems.push(where + ": needs a non-empty `path`"); continue; }
     var l;
     try { l = getLayerById(c, tr.layerId); } catch (eL) { problems.push(where + ": " + __pwMsg(eL)); continue; }
-    var plan = __kwPlanTrack(c, l, tr, fd, timeBase);
+    var plan = __kwPlanTrack(c, l, tr, fd, timeBase, oracle);
     if (plan.problems) {
       for (var pi = 0; pi < plan.problems.length; pi++) problems.push(where + ": " + plan.problems[pi]);
       continue;
@@ -875,6 +1067,7 @@ OPS.set_keyframes = function (args) {
 
   // ---- Write, verify, roll everything back on the first failure ----
   var timing = { preflightMs: new Date().getTime() - started, writeMs: 0, verifyMs: 0 };
+  oracle.outcome = "writing";
   var touched = [];
   var results = [];
   for (var w = 0; w < plans.length; w++) {
@@ -894,7 +1087,8 @@ OPS.set_keyframes = function (args) {
       failure = "After Effects refused it: " + __pwMsg(eA);
     }
     if (failure) {
-      var rb = __kwRollback(touched);
+      var rb = __kwRollback(touched, oracle);
+      oracle.outcome = rb.clean ? "rolled back" : "rollback incomplete";
       throw new Error(
         "set_keyframes: track " + pl.trackNumber + " (layer " + pl.layer.id + ", " + __propertyPathLabel(pl.path) + ", " + pl.label + ") failed — " + failure + ". " +
         (rb.clean ? "Rolled back every track this call touched (" + rb.notes.join("; ") + "), so no animation changed." :
@@ -943,5 +1137,6 @@ OPS.set_keyframes = function (args) {
     out.displayStartFrame = __kwFrameOf(c.displayStartTime, fd);
     out.displayStartNote = "This comp's timeline starts at frame " + out.displayStartFrame + "; `frame` here counts from the comp's first frame (time 0), not from the displayed number.";
   }
+  oracle.outcome = "applied";
   return out;
-};
+}

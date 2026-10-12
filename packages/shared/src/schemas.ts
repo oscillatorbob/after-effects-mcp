@@ -1388,8 +1388,8 @@ const KEY_INTERPOLATION = z.enum(["linear", "bezier", "hold"]);
 export const KeyframeSpec = crossField(
   z
     .object({
-      frame: z.number().int().optional().describe("Comp frame, counted from the comp's first frame (time 0). Converted with the comp's frameDuration, so 23.976 and 29.97 land exactly on the frame."),
-      time: z.number().optional().describe("Comp time in seconds. Kept exactly as given, fractional frames included."),
+      frame: z.number().int().optional().describe("Comp frame, counted from the comp's first frame (time 0). Converted with the comp's frameDuration, so 23.976 and 29.97 land on the frame (After Effects stores key times on a grid about 1/1000 of a frame fine; far into a long comp a frame key can read back one such step off, and it is still that frame's key)."),
+      time: z.number().optional().describe("Comp time in seconds; fractional frames stay fractional. After Effects rounds it to float32 and then to its key-time grid (a step of about 1/20000–1/36000 s set by the frame rate — 1/30720 s at 30 fps — and moved by the layer's stretch), so the stored time differs from the asked one: by up to half a grid step near 0, but by much more far from 0, where float32 rounding dominates (10000 + 1/120 s is stored 0.00046 s later at 30 fps — 14 grid steps), and differently on a stretched layer. The result reports the stored time; read it back rather than assuming the asked one. Two times After Effects stores at one time are one key."),
       value: StaticPropertyValue.describe("The key's value, in inspect_property_tree's shape: a number, an array of exactly the property's dimension count (COLOR takes all four, [r,g,b,a]), or a Shape."),
       interpolation: z
         .object({ in: KEY_INTERPOLATION, out: KEY_INTERPOLATION })

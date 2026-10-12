@@ -4,7 +4,10 @@
 // The handler runs unmodified in a vm against a keyframe-capable mock of the
 // After Effects property model, built from what AE 26.5x89 was measured to do
 // (docs/fragile-areas-ae.md, "Keyframe writes"):
-//   * keys merge within ~2.5e-5 s; a new key copies its neighbour's
+//   * a key time is stored the way recipe 61 measured — float32, then the
+//     comp's key-time step (24576/s for the 24 family, 25600/s for 25, 30720/s
+//     for 30, 23976/s for every NTSC rate), scaled by the layer's stretch; a
+//     time stored on an existing key updates it; a new key copies its neighbour's
 //     interpolation; setValueAtTime / setValuesAtTimes keep an existing key's
 //     metadata;
 //   * setting an ease turns both sides Bezier and auto-Bezier off; temporal
@@ -51,7 +54,38 @@ const PVT = {
 };
 const KIT = { LINEAR: 6612, BEZIER: 6613, HOLD: 6614 };
 const SHAPE_FIELDS = ["vertices", "inTangents", "outTangents", "closed", "featherSegLocs", "featherRelSegLocs", "featherRadii", "featherTypes", "featherInterps", "featherTensions", "featherRelCornerAngles"];
-const MERGE_TOL = 2.5e-5;
+// After Effects' key-time storage, as recipe 61 measured it: steps per second
+// are the integer frame rate doubled while that stays at most 32768 (12, 24,
+// 48 → 24576; 25, 50, 100 → 25600; 15, 30, 60, 120 → 30720; 1 → 32768; 10 →
+// 20480), and 23976 for every NTSC rate (23.976, 29.97, 47.952, 59.94, 119.88,
+// whose frameDurations AE makes 1/23.976, 1/29.97, …: 1000, 800, 500, 400, 200
+// steps a frame). The
+// time is rounded to float32 first, and the grid follows the layer's stretch
+// (start time does not move it). Rates outside both families store exactly.
+function keyStepFor(fd) {
+  const F = 1 / fd;
+  if (Math.abs(F - Math.round(F)) < 1e-9) { let S = Math.round(F); while (S * 2 <= 32768) S *= 2; return 1 / S; }
+  const n = 23976 * fd;                       // whole steps a frame at NTSC rates
+  if (Math.abs(n - Math.round(n)) < 1e-6) return 1 / 23976;
+  return null;
+}
+// A write is recorded only on the user's comp: the key-time oracle's scratch
+// comp is not user content, and "nothing was written" means to the user's
+// properties. Every scratch comp is checked for removal separately.
+function layerOf(node) { let l = node; while (l && !l.__kind) l = l.parent; return l; }
+function logWrite(node, entry) { const l = layerOf(node); if (!(l && l.__comp && l.__comp.__scratch)) writes.push(entry); }
+function storedTime(node, t) {
+  const layer = layerOf(node);
+  const fd = layer && layer.__comp ? layer.__comp.frameDuration : null;
+  const q = fd ? keyStepFor(fd) : null;
+  if (!q) return t;
+  const sx = (layer.stretch ?? 100) / 100;
+  const g = Math.round(Math.fround(t / sx) / q) * q;
+  // On a stretched layer the mapped-back time is rounded again, which (like
+  // After Effects on stretched layers far from 0, recipe 61) can move a stored
+  // time when it is written a second time. Monotone, so it can be searched.
+  return sx === 1 ? g : Math.fround(g * sx);
+}
 const SPATIAL = [PVT.TwoD_SPATIAL, PVT.ThreeD_SPATIAL];
 
 let writes = [];   // every value-writing AE call, in order: [matchName, method]
@@ -167,16 +201,17 @@ class Prop extends Node {
     return !pre && this.expression && this.expressionEnabled && this.evaluate ? this.evaluate(raw) : raw;
   }
   setValue(v) {
-    writes.push([this.matchName, "setValue"]);
+    logWrite(this, [this.matchName, "setValue"]);
     this._guard("setValue");
     if (this.keys.length) throw new Error("Can not call setValue() on a property with keyframes.");
     this._static = this._store(v);
   }
   setValueAtTime(t, v) {
-    writes.push([this.matchName, "setValueAtTime"]);
+    logWrite(this, [this.matchName, "setValueAtTime"]);
     this._guard("setValueAtTime");
     const stored = this._store(v);
-    const at = this.keys.findIndex((k) => Math.abs(k.time - t) <= MERGE_TOL);
+    t = storedTime(this, t);
+    const at = this.keys.findIndex((k) => k.time === t);
     if (at >= 0) this.keys[at].value = stored;
     else {
       let i = this.keys.findIndex((k) => k.time > t);
@@ -190,15 +225,24 @@ class Prop extends Node {
     if (times.length !== values.length) throw new Error(`Value array does not have ${times.length} elements.`);
     for (let i = 0; i < times.length; i++) this.setValueAtTime(times[i], values[i]);
   }
-  setValueAtKey(k, v) { writes.push([this.matchName, "setValueAtKey"]); this._guard("setValueAtKey"); this._k(k).value = this._store(v); this._maskCheck(); }
+  setValueAtKey(k, v) { logWrite(this, [this.matchName, "setValueAtKey"]); this._guard("setValueAtKey"); this._k(k).value = this._store(v); this._maskCheck(); }
   removeKey(k) {
-    writes.push([this.matchName, "removeKey"]);
+    logWrite(this, [this.matchName, "removeKey"]);
     this._k(k);
     this.keys.splice(k - 1, 1);
     if (!this.keys.length && this.onRemoveLast) this.onRemoveLast(this);
   }
   keyTime(k) { return this._k(k).time; }
-  keyValue(k) { return this._copy(this._k(k).value); }
+  keyValue(k) {
+    const v = this._copy(this._k(k).value);
+    // Measured (recipe 61): on a stretched layer After Effects can read a key's
+    // value back a hair off — Rotation 2 at 599.37 s, stretch 61%, read
+    // 1.99999986734146. Reproduced on scratch-comp layers, where the key-time
+    // oracle reads its own marker values.
+    const l = layerOf(this);
+    if (typeof v === "number" && l && l.__comp && l.__comp.__scratch && (l.stretch ?? 100) !== 100) return v * (1 - 6.6e-8);
+    return v;
+  }
   nearestKeyIndex(t) {
     let best = 1, d = Infinity;
     this.keys.forEach((k, i) => { if (Math.abs(k.time - t) < d) { d = Math.abs(k.time - t); best = i + 1; } });
@@ -208,7 +252,7 @@ class Prop extends Node {
   keyInInterpolationType(k) { return this._k(k).inI; }
   keyOutInterpolationType(k) { return this._k(k).outI; }
   setInterpolationTypeAtKey(k, i, o = i) {
-    writes.push([this.matchName, "setInterpolationTypeAtKey"]);
+    logWrite(this, [this.matchName, "setInterpolationTypeAtKey"]);
     if (this.ignore.setInterpolationTypeAtKey) return;
     const key = this._k(k);
     key.inI = i; key.outI = o;
@@ -217,7 +261,7 @@ class Prop extends Node {
   keyInTemporalEase(k) { return this._k(k).easeIn.map((e) => ({ ...e })); }
   keyOutTemporalEase(k) { return this._k(k).easeOut.map((e) => ({ ...e })); }
   setTemporalEaseAtKey(k, a, b) {
-    writes.push([this.matchName, "setTemporalEaseAtKey"]);
+    logWrite(this, [this.matchName, "setTemporalEaseAtKey"]);
     if (this.fail.setTemporalEaseAtKey) throw new Error(this.fail.setTemporalEaseAtKey);
     const d = easeDims(this.propertyValueType);
     if (a.length !== d || b.length !== d) throw new Error(`Unable to call “setTemporalEaseAtKey” because of parameter 2. Value array does not have ${d} elements.`);
@@ -230,13 +274,13 @@ class Prop extends Node {
   keyTemporalContinuous(k) { return this._k(k).tc; }
   keyTemporalAutoBezier(k) { return this._k(k).tab; }
   setTemporalContinuousAtKey(k, b) {
-    writes.push([this.matchName, "setTemporalContinuousAtKey"]);
+    logWrite(this, [this.matchName, "setTemporalContinuousAtKey"]);
     const key = this._k(k);
     key.tc = b;
     if (b) { key.inI = KIT.BEZIER; key.outI = KIT.BEZIER; key.easeOut = key.easeOut.map((e, i) => ({ speed: key.easeIn[i].speed, influence: e.influence })); }
   }
   setTemporalAutoBezierAtKey(k, b) {
-    writes.push([this.matchName, "setTemporalAutoBezierAtKey"]);
+    logWrite(this, [this.matchName, "setTemporalAutoBezierAtKey"]);
     const key = this._k(k);
     key.tab = b;
     if (b) { key.tc = true; key.inI = KIT.BEZIER; key.outI = KIT.BEZIER; key.easeIn = key.easeIn.map(() => ({ speed: 7, influence: 16.666666667 })); key.easeOut = key.easeOut.map(() => ({ speed: 7, influence: 16.666666667 })); }
@@ -249,7 +293,7 @@ class Prop extends Node {
   keySpatialAutoBezier(k) { this._sp(); return this._k(k).sab; }
   keyRoving(k) { this._sp(); return this._k(k).roving; }
   setSpatialTangentsAtKey(k, a, b) {
-    writes.push([this.matchName, "setSpatialTangentsAtKey"]);
+    logWrite(this, [this.matchName, "setSpatialTangentsAtKey"]);
     this._sp();
     const n = this.propertyValueType === PVT.ThreeD_SPATIAL ? 3 : 2;
     if (a.length !== n || b.length !== n) throw new Error(`Value array does not have ${n} elements.`);
@@ -257,12 +301,12 @@ class Prop extends Node {
     key.inT = clone(a); key.outT = clone(b); key.sab = false;
     if (this.matchName === "ADBE Orientation") key.value = [key.value[0], 350, 10];   // measured: the value is rewritten
   }
-  setSpatialAutoBezierAtKey(k, b) { writes.push([this.matchName, "setSpatialAutoBezierAtKey"]); this._sp(); const key = this._k(k); key.sab = b; if (b) { key.inT = [-33.3333320617676, 0, 0].slice(0, key.inT.length); key.outT = [33.3333320617676, 0, 0].slice(0, key.outT.length); } }
-  setSpatialContinuousAtKey(k, b) { writes.push([this.matchName, "setSpatialContinuousAtKey"]); this._sp(); this._k(k).sc = b; }
-  setRovingAtKey(k, b) { writes.push([this.matchName, "setRovingAtKey"]); this._sp(); if (k === 1 || k === this.keys.length) return; this._k(k).roving = b; }
+  setSpatialAutoBezierAtKey(k, b) { logWrite(this, [this.matchName, "setSpatialAutoBezierAtKey"]); this._sp(); const key = this._k(k); key.sab = b; if (b) { key.inT = [-33.3333320617676, 0, 0].slice(0, key.inT.length); key.outT = [33.3333320617676, 0, 0].slice(0, key.outT.length); } }
+  setSpatialContinuousAtKey(k, b) { logWrite(this, [this.matchName, "setSpatialContinuousAtKey"]); this._sp(); this._k(k).sc = b; }
+  setRovingAtKey(k, b) { logWrite(this, [this.matchName, "setRovingAtKey"]); this._sp(); if (k === 1 || k === this.keys.length) return; this._k(k).roving = b; }
   keyLabel(k) { return this._k(k).label; }
   setLabelAtKey(k, n) {
-    writes.push([this.matchName, "setLabelAtKey"]);
+    logWrite(this, [this.matchName, "setLabelAtKey"]);
     if (n < 0 || n > 16) throw new Error(`Value ${n} out of range 0 to 16.`);
     if (this.ignore.setLabelAtKey) return;
     this._k(k).label = n;
@@ -279,7 +323,7 @@ function seed(p, specs) {
 
 function makeLayer(id, name, children, { threeD = false, kind = "av", lightType } = {}) {
   const layer = new Group(name, "ADBE AV Layer", children);
-  Object.assign(layer, { id, threeDLayer: threeD, __kind: kind, lightType });
+  Object.assign(layer, { id, threeDLayer: threeD, __kind: kind, lightType, startTime: 0, stretch: 100 });
   return layer;
 }
 
@@ -376,6 +420,7 @@ function load(layers, { fps = 24, frameDuration, duration = 20, displayStartTime
       beginUndoGroup: () => { undoOpened++; },
       endUndoGroup: () => { undoClosed++; },
       project: {
+        items: { addComp: (...a) => ctx.__addComp(...a) },
         itemByID: (id) => ctx.__items[id] ?? (() => { throw new Error("internal verification failure, sorry! {Item Not Found}"); })(),
         save: () => { saved++; },
       },
@@ -407,6 +452,33 @@ function load(layers, { fps = 24, frameDuration, duration = 20, displayStartTime
     frameRate: Math.fround(fps), frameDuration: frameDuration ?? 1 / fps, duration, displayStartTime,
   });
   ctx.__items[1] = comp;
+  for (const l of layers) l.__comp = comp;
+  // Scratch comps (the key-time oracle): every one is recorded, so a test can
+  // see each was removed again.
+  ctx.__scratch = [];
+  // Faults to inject: scratchRemove "throw" (remove() raises) or "noop" (accepted,
+  // item stays); scratchAddTextFails makes the oracle's set-up fail.
+  ctx.__fault = { scratchRemove: null, scratchAddTextFails: false };
+  ctx.__addComp = (name, w, h, par, dur, fps) => {
+    const sc = vm.runInContext("new CompItem()", ctx);
+    const own = [];
+    Object.assign(sc, {
+      id: 9000 + ctx.__scratch.length, name, duration: dur, frameDuration: 1 / fps, frameRate: fps, removed: false, __scratch: true,
+      get numLayers() { return own.length; }, layer: (i) => own[i - 1],
+      layers: { addText: (n) => {
+        if (ctx.__fault.scratchAddTextFails) throw new Error("After Effects error: addText failed (stub)");
+        const tl = makeLayer(9500 + own.length, n, [transform()], { kind: "text" }); tl.__comp = sc; own.push(tl); return tl;
+      } },
+      remove() {
+        if (ctx.__fault.scratchRemove === "throw") throw new Error("After Effects error: remove refused (stub)");
+        if (ctx.__fault.scratchRemove === "noop") return;
+        this.removed = true; delete ctx.__items[this.id];
+      },
+    });
+    ctx.__scratch.push(sc);
+    ctx.__items[sc.id] = sc;
+    return sc;
+  };
   const dispatch = vm.runInContext("dispatch", ctx);
   const call = (op, args) => plain(dispatch(JSON.stringify({ op, args: { compId: 1, ...args } })));
   return {
@@ -424,6 +496,8 @@ const keyView = (p) => p.keys.map((k) => ({ t: k.time, v: k.value, io: [k.inI, k
 
 let passed = 0;
 function check(name, fn) {
+  // ONLY=<name prefix> runs just the matching checks (for bisecting a failure); unset, everything runs.
+  if (process.env.ONLY && !name.startsWith(process.env.ONLY)) return;
   try { fn(); passed++; } catch (e) { console.error(`FAIL: ${name}`); throw e; }
 }
 
@@ -583,9 +657,18 @@ check("12. duplicate track targets are refused however the paths are spelled", (
 
 check("13. duplicate key times are refused after frame/time normalisation", () => {
   const run = load([richLayer()]);
-  refused(run.keys([t(5, OPACITY, "merge", [{ frame: 3, value: 1 }, { frame: 3, value: 2 }])]), /key 2 \(frame 3\) lands on the same time as key 1 \(frame 3\)/);
-  refused(run.keys([t(5, OPACITY, "merge", [{ time: 0.5, value: 1 }, { time: 0.50005, value: 2 }])]), /lands on the same time/);
+  refused(run.keys([t(5, OPACITY, "merge", [{ frame: 3, value: 1 }, { frame: 3, value: 2 }])]), /key [12] \(frame 3\) lands on the same After Effects key as key [12] \(frame 3\)/);
+  // 0.5 and 0.50001 s are a quarter of a 24 fps storage step (1/24576 s) apart:
+  // After Effects stores both at one time, so they are one key (recipe 61).
+  refused(run.keys([t(5, OPACITY, "merge", [{ time: 0.5, value: 1 }, { time: 0.50001, value: 2 }])]), /lands on the same After Effects key/);
   assert.equal(writes.length, 0);
+  // 0.50005 s is 1.23 steps from 0.5 s: two keys in After Effects. The old fixed
+  // 1e-4 s took them for one and refused; they are written as two.
+  const layer = richLayer();
+  const run2 = load([layer]);
+  const r = ok(run2.keys([t(5, OPACITY, "merge", [{ time: 0.5, value: 1 }, { time: 0.50005, value: 2 }])]));
+  assert.equal(r.tracks[0].keysAdded, 2);
+  assert.equal(prop(layer, OPACITY).keys.length, 2);
 });
 
 check("14. one time base per request: mixing frame and time, or a key with both/neither, is refused", () => {
@@ -637,21 +720,28 @@ check("17. a later invalid track means no earlier track is touched, and every pr
 // Time
 // ---------------------------------------------------------------------------
 
-check("18. frames use the comp's frameDuration: 23.976 lands exactly; seconds are kept as given", () => {
+check("18. frames use the comp's frameDuration: 23.976 lands on the frame; seconds land on After Effects' key-time grid", () => {
   const cam = cameraLayer();
-  const fd = 1001 / 24000;
+  const fd = 1 / 23.976;                      // what After Effects makes a 23.976 comp's frameDuration
   const run = load([cam], { fps: 23.976, frameDuration: fd, duration: 60 });
   const frames = [0, 1, 12, 99, 150, 200, 240];
   const r = ok(run.keys([t(6, ZOOM, "replace", frames.map((f) => ({ frame: f, value: 100 + f })))]));
   const times = prop(cam, ZOOM).keys.map((k) => k.time);
-  assert.deepEqual(times, frames.map((f) => f * fd));
-  for (let i = 0; i < frames.length; i++) assert.ok(Math.abs(times[i] / fd - frames[i]) < 1e-9);
+  // Stored on the frame: frame × frameDuration, after After Effects' float32 and
+  // grid rounding (1/23976 s at 23.976 — 1000 steps a frame), which at
+  // these times moves nothing beyond the last digit (recipe 61).
+  for (let i = 0; i < frames.length; i++) assert.ok(Math.abs(times[i] - frames[i] * fd) < 1e-12, `frame ${frames[i]} stored at ${times[i]}`);
   assert.equal(r.tracks[0].last.frame, 240);
   assert.equal(r.frameDuration, fd);
-  // Seconds: a fractional frame is kept.
+  // Seconds: a fractional frame stays fractional, but is stored where After
+  // Effects stores it — on its key-time grid — and the result reports that time.
   const r2 = ok(run.keys([t(6, ["ADBE Camera Options Group", "ADBE Camera Focus Distance"], "replace", [{ time: 0.4379, value: 200 }])]));
   assert.equal(r2.timeBase, "seconds");
-  assert.equal(prop(cam, ["ADBE Camera Options Group", "ADBE Camera Focus Distance"]).keys[0].time, 0.4379);
+  const step = 1 / 23976;
+  const stored = prop(cam, ["ADBE Camera Options Group", "ADBE Camera Focus Distance"]).keys[0].time;
+  assert.equal(stored, Math.round(Math.fround(0.4379) / step) * step);
+  assert.ok(Math.abs(stored - 0.4379) < step / 2 && stored !== 0.4379);
+  assert.equal(r2.tracks[0].first.time, stored);
   assert.equal(r2.tracks[0].first.frame, undefined);
 });
 
@@ -1008,6 +1098,227 @@ check("45. one setValuesAtTimes write per track, and setters only where a key di
   const calls = writes.filter(([m]) => m === "ADBE Rotate Z").map(([, w]) => w);
   assert.equal(calls.filter((w) => w === "setValueAtTime").length, 200, "one bulk call (the mock expands it per key)");
   assert.equal(calls.filter((w) => w === "setTemporalAutoBezierAtKey" || w === "setLabelAtKey" || w === "setInterpolationTypeAtKey").length, 0, "fresh keys already match the defaults");
+});
+
+// ---------------------------------------------------------------------------
+// B2.1 — key identity follows After Effects' own key-time storage
+// ---------------------------------------------------------------------------
+// At 30 fps After Effects keeps 1 s and 1 + 2/30720 s (1.0000651 s) as two
+// keys (recipe 61). The fixed 1e-4 s tolerance B2 shipped with took them for
+// one: a merge overwrote the key at 1 s, and a replace kept the neighbour,
+// then refused and rolled back (docs/fragile-areas-ae.md, open issue).
+const NEAR = 1 + 2 / 30720;
+
+check("B2.1-1. merge one storage step from an existing key makes a distinct key; the existing key keeps its value", () => {
+  const layer = richLayer();
+  const run = load([layer], { fps: 30, duration: 10 });
+  seed(prop(layer, OPACITY), [{ t: 1, v: 90 }]);
+  const r = ok(run.keys([t(5, OPACITY, "merge", [{ time: NEAR, value: 70 }])]));
+  assert.equal(r.tracks[0].keysAdded, 1, "a new key, not an update of the key at 1 s");
+  assert.equal(r.tracks[0].keysUpdated, 0);
+  const ks = prop(layer, OPACITY).keys;
+  assert.equal(ks.length, 2);
+  assert.deepEqual([ks[0].time, ks[0].value], [1, 90], "the key at 1 s still holds 90");
+  assert.equal(ks[1].value, 70);
+  assert.ok(ks[1].time > 1, "the new key is after 1 s");
+});
+
+check("B2.1-2. replace removes a neighbour one storage step from a written key, instead of refusing", () => {
+  const layer = richLayer();
+  const run = load([layer], { fps: 30, duration: 10 });
+  seed(prop(layer, OPACITY), [{ t: 1, v: 90 }, { t: NEAR, v: 70 }]);
+  const r = ok(run.keys([t(5, OPACITY, "replace", [{ frame: 0, value: 40 }, { frame: 30, value: 80 }])]));
+  assert.equal(r.tracks[0].keysRemoved, 1);
+  assert.deepEqual(prop(layer, OPACITY).keys.map((k) => [k.time, k.value]), [[0, 40], [1, 80]]);
+});
+
+check("B2.1-3. repeated writes at one time update the one key; a time on the same storage step is that key too", () => {
+  const layer = richLayer();
+  const run = load([layer], { fps: 30, duration: 10 });
+  let r = ok(run.keys([t(5, OPACITY, "merge", [{ time: 1, value: 10 }])]));
+  assert.equal(r.tracks[0].keysAdded, 1);
+  r = ok(run.keys([t(5, OPACITY, "merge", [{ time: 1, value: 20 }])]));
+  assert.deepEqual([r.tracks[0].keysAdded, r.tracks[0].keysUpdated], [0, 1]);
+  // 0.4 of a step (1/30720 s at 30 fps) later: After Effects stores it at 1 s.
+  r = ok(run.keys([t(5, OPACITY, "merge", [{ time: 1 + 0.4 / 30720, value: 30 }])]));
+  assert.deepEqual([r.tracks[0].keysAdded, r.tracks[0].keysUpdated], [0, 1]);
+  assert.deepEqual(prop(layer, OPACITY).keys.map((k) => [k.time, k.value]), [[1, 30]]);
+});
+
+check("B2.1-4. the 15-minute 30 fps workflow: frame keys across the comp, a frame stored one step off still matches its key", () => {
+  const layer = richLayer();
+  const run = load([layer], { fps: 30, duration: 900 });
+  const frames = [0, 30, 1799, 9000, 17981, 26999, 27000];
+  ok(run.keys([t(5, ROT, "replace", frames.map((f) => ({ frame: f, value: f })))]));
+  const ks = prop(layer, ROT).keys;
+  assert.equal(ks.length, frames.length);
+  // Frame 17981 (599.37 s) is stored one step early — After Effects' own rounding (recipe 61).
+  assert.equal(ks[4].time, 599.3666341145833);
+  // Updating each frame by number matches its key, wherever After Effects stored it.
+  const r = ok(run.keys([t(5, ROT, "merge", frames.map((f) => ({ frame: f, value: f + 1 })))]));
+  assert.deepEqual([r.tracks[0].keysAdded, r.tracks[0].keysUpdated], [0, frames.length]);
+  assert.deepEqual(prop(layer, ROT).keys.map((k) => k.value), frames.map((f) => f + 1));
+  // A replace keeping half of them removes exactly the other half.
+  const keep = [0, 9000, 17981, 27000];
+  const r2 = ok(run.keys([t(5, ROT, "replace", keep.map((f) => ({ frame: f, value: 1000 + f })))]));
+  assert.equal(r2.tracks[0].keysRemoved, 3);
+  assert.deepEqual(prop(layer, ROT).keys.map((k) => k.value), keep.map((f) => 1000 + f));
+});
+
+check("B2.1-5. untouched keys keep their time, value and metadata; the expression is left alone", () => {
+  const layer = richLayer();
+  const run = load([layer], { fps: 30, duration: 10 });
+  const p = prop(layer, OPACITY);
+  seed(p, [{ t: 1, v: 90, meta: { label: 3 } }, { t: 2, v: 50, meta: { label: 5 } }]);
+  p.expression = "value"; p.expressionEnabled = true;
+  ok(run.keys([t(5, OPACITY, "merge", [{ time: NEAR, value: 70 }])]));
+  assert.deepEqual(p.keys.map((k) => [k.time, k.value, k.label]), [[1, 90, 3], [p.keys[1].time, 70, 0], [2, 50, 5]]);
+  assert.equal(p.expression, "value");
+});
+
+check("B2.1-6. rollback puts every key back at its exact stored time, also where rewriting that time would move it", () => {
+  const layer = richLayer();
+  layer.stretch = 61;
+  const run = load([layer], { fps: 30, duration: 900 });
+  // A stored time the stub's (and After Effects') rounding does not map onto itself: rewriting it
+  // at its own time would land a step away, which is what __kwWriteTimeFor exists for.
+  let shifty = null;
+  for (let tt = 500; tt < 899 && shifty === null; tt += 0.0137) {
+    const st = storedTime(prop(layer, OPACITY), tt);
+    if (storedTime(prop(layer, OPACITY), st) !== st) shifty = st;
+  }
+  assert.ok(shifty !== null, "the model must have a non-idempotent stored time to test against");
+  const p = prop(layer, OPACITY);
+  // Existing keys sit where After Effects stores them on this stretched layer.
+  const one = storedTime(p, 1);
+  seed(p, [{ t: one, v: 10 }, { t: shifty, v: 20 }]);
+  // A second track whose interpolation AE silently refuses: the readback fails, everything rolls back.
+  const rot = prop(layer, ROT);
+  rot.ignore = { setInterpolationTypeAtKey: true };
+  const err = refused(run.keys([
+    t(5, OPACITY, "replace", [{ time: 3, value: 99 }]),
+    t(5, ROT, "merge", [{ time: 1, value: 5, interpolation: { in: "hold", out: "hold" } }]),
+  ]), /Rolled back every track/);
+  assert.doesNotMatch(err, /INCOMPLETE/);
+  assert.deepEqual(p.keys.map((k) => [k.time, k.value]), [[one, 10], [shifty, 20]], "both keys back at their exact stored times");
+});
+
+check("B2.1-8. a merge writes at the requested time, never at the matched key's stored time (which can move it)", () => {
+  const layer = richLayer();
+  layer.stretch = 61;
+  const run = load([layer], { fps: 30, duration: 900 });
+  const p = prop(layer, OPACITY);
+  let asked = null, at = null;
+  for (let tt = 500; tt < 899 && asked === null; tt += 0.0137) {
+    const st = storedTime(p, tt);
+    if (storedTime(p, st) !== st) { asked = tt; at = st; }
+  }
+  assert.ok(asked !== null);
+  ok(run.keys([t(5, OPACITY, "merge", [{ time: asked, value: 20 }])]));
+  assert.deepEqual(p.keys.map((k) => k.time), [at]);
+  // The same request again is the same key: an update. Writing at `at` instead would land a step away.
+  const r = ok(run.keys([t(5, OPACITY, "merge", [{ time: asked, value: 30 }])]));
+  assert.deepEqual([r.tracks[0].keysAdded, r.tracks[0].keysUpdated], [0, 1]);
+  assert.deepEqual(p.keys.map((k) => [k.time, k.value]), [[at, 30]]);
+});
+
+check("B2.1-9. several keys at once on a stretched layer — where After Effects reads values back a hair off — are told apart", () => {
+  // The live proof's case: frames 30, 9000, 17981 and 26000 at 30 fps, stretch 61%, start 0.123.
+  const layer = richLayer();
+  layer.stretch = 61;
+  layer.startTime = 0.123;
+  const run = load([layer], { fps: 30, duration: 900 });
+  const frames = [30, 9000, 17981, 26000];
+  const r = ok(run.keys([t(5, ROT, "replace", frames.map((f) => ({ frame: f, value: f })))]));
+  assert.equal(r.tracks[0].actualKeyCount, 4);
+  const r2 = ok(run.keys([t(5, ROT, "merge", frames.map((f) => ({ frame: f, value: f + 1 })))]));
+  assert.deepEqual([r2.tracks[0].keysAdded, r2.tracks[0].keysUpdated], [0, 4]);
+});
+
+check("B2.1-7. the scratch comp is removed after a success, a refusal before writing, and a rollback", () => {
+  const layer = richLayer();
+  const run = load([layer], { fps: 30, duration: 10 });
+  ok(run.keys([t(5, OPACITY, "merge", [{ time: 1, value: 10 }])]));
+  refused(run.keys([t(5, OPACITY, "merge", [{ time: 1, value: 1 }, { time: 1, value: 2 }])]), /same After Effects key/);
+  prop(layer, ROT).ignore = { setInterpolationTypeAtKey: true };
+  refused(run.keys([t(5, ROT, "merge", [{ time: 1, value: 5, interpolation: { in: "hold", out: "hold" } }])]), /Rolled back/);
+  assert.ok(run.ctx.__scratch.length >= 3, "one scratch comp per call");
+  assert.ok(run.ctx.__scratch.every((c) => c.removed), "every scratch comp was removed");
+  assert.ok(run.ctx.__scratch.every((c) => c.frameDuration === 1 / 30), "each took the target comp's frameDuration");
+});
+
+// ---------------------------------------------------------------------------
+// B2.1 — a scratch comp that will not go away is reported, never swallowed
+// ---------------------------------------------------------------------------
+// Reproduced by Codex: with remove() throwing, a successful write came back
+// plain ok and a validation refusal said "Nothing was changed", each with the
+// scratch comp still in the project.
+const leftovers = (run) => run.ctx.__scratch.filter((c) => !c.removed);
+const CLEANUP = /Cleanup FAILED: the scratch comp "__ae_mcp_key_time_probe__" \(project item id 9\d{3}\)[\s\S]*could not be removed \(After Effects error: remove refused \(stub\)\) and is still in the project\. It holds no animation of yours — delete it with delete_project_item\(\{itemId: 9\d{3}\}\)\. Do not re-send this set_keyframes request because of it\./;
+
+check("B2.1-10. set-up failure: nothing written, and a scratch comp it could not remove is named", () => {
+  const layer = richLayer();
+  const run = load([layer], { fps: 30, duration: 10 });
+  run.ctx.__fault.scratchAddTextFails = true;
+  // Removal works: the error says nothing was applied, and nothing is left.
+  let err = refused(run.keys([t(5, OPACITY, "merge", [{ time: 1, value: 10 }])]), /key-time check could not be prepared \(After Effects error: addText failed \(stub\)\)\. The animation was not applied — nothing was written to any of your properties\./);
+  assert.doesNotMatch(err, /Cleanup FAILED/);
+  assert.equal(leftovers(run).length, 0);
+  // Removal fails too: the same, plus the leftover named.
+  run.ctx.__fault.scratchRemove = "throw";
+  err = refused(run.keys([t(5, OPACITY, "merge", [{ time: 1, value: 10 }])]), /The animation was not applied — nothing was written to any of your properties\./);
+  assert.match(err, CLEANUP);
+  assert.equal(leftovers(run).length, 1);
+  assert.equal(writes.length, 0);
+  assert.equal(prop(layer, OPACITY).keys.length, 0);
+});
+
+check("B2.1-11. success: the animation is reported applied, with the leftover named and no call to retry", () => {
+  const layer = richLayer();
+  const run = load([layer], { fps: 30, duration: 10 });
+  run.ctx.__fault.scratchRemove = "throw";
+  const r = ok(run.keys([t(5, OPACITY, "merge", [{ time: 1, value: 10 }])]));
+  assert.equal(r.tracks[0].keysAdded, 1);
+  assert.equal(r.scratchCompLeftover, true);
+  assert.match(r.warning, /^The animation WAS applied, exactly as the tracks above report\. /);
+  assert.match(r.warning, CLEANUP);
+  assert.deepEqual(prop(layer, OPACITY).keys.map((k) => [k.time, k.value]), [[1, 10]]);
+  assert.equal(leftovers(run).length, 1);
+  // A remove() After Effects accepts but that leaves the item is caught by checking the project.
+  run.ctx.__fault.scratchRemove = "noop";
+  const r2 = ok(run.keys([t(5, OPACITY, "merge", [{ time: 2, value: 20 }])]));
+  assert.match(r2.warning, /could not be removed \(After Effects accepted remove\(\) but the item is still in the project\)/);
+  // And with removal working again, no warning at all.
+  run.ctx.__fault.scratchRemove = null;
+  const r3 = ok(run.keys([t(5, OPACITY, "merge", [{ time: 3, value: 30 }])]));
+  assert.equal(r3.warning, undefined);
+  assert.equal(r3.scratchCompLeftover, undefined);
+});
+
+check("B2.1-12. preflight refusal: the original refusal stays whole, says the animation is unchanged, and names the leftover", () => {
+  const layer = richLayer();
+  const run = load([layer], { fps: 30, duration: 10 });
+  run.ctx.__fault.scratchRemove = "throw";
+  const err = refused(run.keys([t(5, OPACITY, "merge", [{ time: 1, value: 1 }, { time: 1, value: 2 }])]));
+  assert.match(err, /^set_keyframes: track 1 \(layer 5, ADBE Transform Group > ADBE Opacity\): key [12] \(1s\) lands on the same After Effects key as key [12] \(1s\)[\s\S]*Nothing was changed\. None of your animation was changed: the request was refused before anything was written\. Cleanup FAILED/);
+  assert.match(err, CLEANUP);
+  assert.equal(writes.length, 0);
+  assert.equal(prop(layer, OPACITY).keys.length, 0);
+});
+
+check("B2.1-13. rollback: the original failure and rollback report stay whole, the animation is stated restored, the leftover named", () => {
+  const layer = richLayer();
+  const run = load([layer], { fps: 30, duration: 10 });
+  seed(prop(layer, OPACITY), [{ t: 1, v: 90 }]);
+  prop(layer, ROT).ignore = { setInterpolationTypeAtKey: true };
+  run.ctx.__fault.scratchRemove = "throw";
+  const err = refused(run.keys([
+    t(5, OPACITY, "replace", [{ time: 2, value: 5 }]),
+    t(5, ROT, "merge", [{ time: 1, value: 5, interpolation: { in: "hold", out: "hold" } }]),
+  ]));
+  assert.match(err, /^set_keyframes: track 2 [\s\S]*failed — the keys did not land as asked[\s\S]*Rolled back every track this call touched [\s\S]*so no animation changed\. Your animation is as it was: what this call wrote was rolled back\. Cleanup FAILED/);
+  assert.match(err, CLEANUP);
+  assert.deepEqual(prop(layer, OPACITY).keys.map((k) => [k.time, k.value]), [[1, 90]]);
 });
 
 console.log(`set-keyframes: ${passed} checks passed`);

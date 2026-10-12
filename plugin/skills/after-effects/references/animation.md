@@ -21,8 +21,10 @@ description: Keyframes, easing, rigging and expressions through the AE MCP tools
 a camera's Position, Orientation, rotations and Zoom over frames 150–240 is one
 call — at the paths `inspect_property_tree` returns, with interpolation, ease,
 flags and spatial tangents per key. Give times as whole `frame`s: they are
-converted with the comp's own frame duration, so 23.976 lands exactly on the
-frame. `merge` adds or updates keys and leaves the rest; `replace` makes the
+converted with the comp's own frame duration, so 23.976 lands on the frame.
+A `time` in seconds is stored on After Effects' key-time grid (a step of about
+1/30000 s), so read back the time it reports; two times it stores together are
+one key, and anything a step apart is two. `merge` adds or updates keys and leaves the rest; `replace` makes the
 given keys the whole animation. Every key is checked before anything is
 written, so a refusal changed nothing. Read the result back with
 `inspect_property_tree({includeKeys: true})`. On a mask path every key must keep

@@ -17,7 +17,7 @@ session is a tax on every request the user ever makes.
 | [`docs/fragile-areas-ae.md`](docs/fragile-areas-ae.md) | Measured After Effects and ExtendScript behaviour: undo, shapes, text, audio, mogrt, expressions, `run_jsx`. |
 | [`docs/fragile-areas-bridge.md`](docs/fragile-areas-bridge.md) | The bridge, ports, CEP, the panel, and the screenshot pipeline. |
 | [`docs/fragile-areas-server.md`](docs/fragile-areas-server.md) | Tool schemas and the MCP protocol, the journal's caches, packaging and binaries. |
-| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 60 recipes run by hand against a live AE 2026. |
+| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 61 recipes run by hand against a live AE 2026. |
 
 **Nothing in `docs/` is generated** — hand-written, like this file. The generated
 prose is elsewhere and is called out below.
@@ -81,7 +81,7 @@ One line each. The annotated version — why each file is the way it is — is i
 | `packages/jsx/explore.jsx` | `get_layer_full` — the deep one-shot dump. The whole reason this MCP exists; spend disproportionate care here. |
 | `packages/jsx/inspect.jsx` | `inspect_property_tree` — the generic, bounded, read-only walk of any layer's property tree. Every path it returns is one `walkProperty` resolves. |
 | `packages/jsx/propwrite.jsx` | `set_property_values` — static writes at the paths `inspect_property_tree` returns. Every update checked before the first write, each read back, a failure rolled back by value. Never removes keys. |
-| `packages/jsx/keywrite.jsx` | `set_keyframes` — bulk keyframes on many properties and layers in one call, at the paths `inspect_property_tree` returns. Every track and key checked before the first write, every track read back, a failure rolled back across tracks by value. Frames convert with the comp's `frameDuration`; mask paths keep their vertex/feather counts (AE's modal warning). |
+| `packages/jsx/keywrite.jsx` | `set_keyframes` — bulk keyframes on many properties and layers in one call, at the paths `inspect_property_tree` returns. Every track and key checked before the first write, every track read back, a failure rolled back across tracks by value. Frames convert with the comp's `frameDuration`; mask paths keep their vertex/feather counts (AE's modal warning). Which times are one key is asked of After Effects through a scratch comp (same frameDuration, a layer with the same start/stretch) — never decided by a tolerance. |
 | `packages/jsx/snapshot.jsx` | The comp fingerprint and the diff of two of them. Pure, so testable with no AE. |
 | `packages/jsx/project.jsx` | The Project panel hierarchy: `get_project_tree`, folders, rename, move, and `delete_project_item`, which refuses any deletion that would reach beyond what it analyzed — After Effects' own `remove()` takes layers and Render Queue items without asking. Ids only; 0 is the root. |
 | `packages/jsx/structure.jsx` | Layer structure: `get_layer_structure`, `move_layer`, `set_layer_parent`, `set_track_matte`, `precompose_layers`. Ids only. `precompose_layers` refuses every case where After Effects would re-wire the comp silently — moveAll:true recreates the moved layers with new ids. |
