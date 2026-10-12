@@ -304,6 +304,13 @@ jobs:
       - name: Layer timing refuses silent clamps and never discards custom Time Remap
         run: node tests/unit/layer-timing.mjs
 
+      # An effect has no id: its index shifts on every structural edit, names
+      # repeat, and AE invalidates every held handle and lets a script through a
+      # locked layer. The stub does all of that, so a locator check, readback or
+      # expression guard that goes missing fails here.
+      - name: Effect stack edits hit exactly the named effect and verify it
+        run: node tests/unit/effect-stack.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.

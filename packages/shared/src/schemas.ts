@@ -694,8 +694,7 @@ export const ClearExpression = z.object({ compId: z.number(), layerId: z.number(
 
 // ---------- effects ----------
 export const ListEffects = z.object({ compId: z.number(), layerId: z.number() });
-export const AddEffect = z.object({ compId: z.number(), layerId: z.number(), matchName: z.string() });
-export const RemoveEffect = z.object({ compId: z.number(), layerId: z.number(), effectIndex: z.number().int().positive() });
+// AddEffect and RemoveEffect live with the effect stack, below.
 export const SetEffectParam = crossField(crossField(
   z.object({
     compId: z.number(),
@@ -1169,6 +1168,72 @@ export const SetTimeRemap = z
       .describe("Only with enabled:false. Disabling a CUSTOMIZED Time Remap (keys moved or added, an expression) deletes that animation, so it is refused unless this is true. Leave false; set true only when the user has agreed to lose the Time Remap animation. Undo is the only way back."),
   })
   .strict();
+// ---------- effect stack ----------
+// effectstack.jsx. After Effects gives an effect no id: its index is its
+// position and shifts on every add/remove/duplicate/move, its display name is
+// mutable and can repeat, and its matchName repeats across copies. So an
+// effect is addressed by a locator that is checked against the live stack —
+// index for position, matchName (and name, when given) to prove it is still
+// the same effect — and a stale one is refused, never re-resolved.
+export const EffectLocator = z
+  .object({
+    effectIndex: z.number().int().min(1)
+      .describe("The effect's 1-based position in the Effects stack, from get_effect_stack. Shifts whenever an effect is added, removed, duplicated or moved — read the stack again after any of those."),
+    matchName: z.string().min(1)
+      .describe("The effect's matchName exactly as get_effect_stack reported it, e.g. 'ADBE Glo2'. Checked against the effect at effectIndex; a mismatch means the index is stale and the call is refused."),
+    effectName: z.string().optional()
+      .describe("The effect's display name exactly as get_effect_stack reported it. Optional but recommended: it is what tells two copies of one effect apart (\"Glow\" vs \"Glow 2\"); checked like matchName."),
+    fingerprint: z.string().regex(/^[0-9a-f]{8}$/).optional()
+      .describe("The effect's fingerprint exactly as get_effect_stack reported it. Pass it when two effects share matchName AND name (two \"Bloom\"s): after a reorder, index + matchName + name can match the other one, and the fingerprint — a hash of every readable value, key and expression — is what tells them apart. It changes when the effect is edited, so read the stack again after a property write."),
+  })
+  .strict();
+const EffectLayerId = StructLayerId;
+const IgnoreExpressionReferences = z.boolean().default(false)
+  .describe("Expressions in this comp that name this effect, or address effects by an index this change shifts, would stop working or silently read another effect — so the call is refused and the expressions are listed. true proceeds anyway and reports what broke. Leave false unless the user agreed.");
+export const GetEffectStack = z.object({ compId: z.number(), layerId: EffectLayerId }).strict();
+export const AddEffect = z
+  .object({
+    compId: z.number(),
+    layerId: EffectLayerId,
+    matchName: z.string().min(1)
+      .describe("The effect's matchName, e.g. 'ADBE Gaussian Blur 2' (stable across languages and AE versions). After Effects also accepts a display name here; the result reports the matchName it actually created."),
+    name: z.string().min(1).optional()
+      .describe("A display name for the new effect. Omit to keep After Effects' own (\"Glow\", or \"Glow 2\" when one exists)."),
+  })
+  .strict();
+export const RemoveEffect = z
+  .object({
+    compId: z.number(),
+    layerId: EffectLayerId,
+    effect: EffectLocator.describe("The one effect to remove, as get_effect_stack reported it."),
+    ignoreExpressionReferences: IgnoreExpressionReferences,
+  })
+  .strict();
+export const DuplicateEffect = z
+  .object({
+    compId: z.number(),
+    layerId: EffectLayerId,
+    effect: EffectLocator.describe("The effect to duplicate, as get_effect_stack reported it. The copy lands directly below it."),
+    name: z.string().min(1).optional()
+      .describe("A display name for the copy. Omit to keep After Effects' own (\"Glow 2\")."),
+    ignoreExpressionReferences: IgnoreExpressionReferences,
+  })
+  .strict();
+export const MoveEffect = crossField(
+  z
+    .object({
+      compId: z.number(),
+      layerId: EffectLayerId,
+      effect: EffectLocator.describe("The effect to move, as get_effect_stack reported it."),
+      to: z.enum(["beginning", "end"]).optional()
+        .describe("beginning: top of the Effects stack (renders first). end: bottom (renders last)."),
+      before: EffectLocator.optional().describe("Place the effect directly above this one."),
+      after: EffectLocator.optional().describe("Place the effect directly below this one."),
+      ignoreExpressionReferences: IgnoreExpressionReferences,
+    })
+    .strict(),
+  { kind: "exactlyOne", fields: ["to", "before", "after"], then: "to is beginning/end; before and after take an effect locator from get_effect_stack." }
+);
 export const FindLayers = z.object({
   compId: z.number().optional(),
   namePattern: z.string().optional(),
@@ -1703,6 +1768,9 @@ export const OpSchemas = {
   list_effects: ListEffects,
   add_effect: AddEffect,
   remove_effect: RemoveEffect,
+  get_effect_stack: GetEffectStack,
+  duplicate_effect: DuplicateEffect,
+  move_effect: MoveEffect,
   set_effect_param: SetEffectParam,
   set_effect_enabled: SetEffectEnabled,
   list_available_effects: ListAvailableEffects,
@@ -1860,6 +1928,9 @@ export const OpMutation = {
   list_effects: "read",
   add_effect: "write",
   remove_effect: "write",
+  get_effect_stack: "read",
+  duplicate_effect: "write",
+  move_effect: "write",
   set_effect_param: "write",
   set_effect_enabled: "write",
   list_available_effects: "read",

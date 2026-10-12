@@ -17,7 +17,7 @@ session is a tax on every request the user ever makes.
 | [`docs/fragile-areas-ae.md`](docs/fragile-areas-ae.md) | Measured After Effects and ExtendScript behaviour: undo, shapes, text, audio, mogrt, expressions, `run_jsx`. |
 | [`docs/fragile-areas-bridge.md`](docs/fragile-areas-bridge.md) | The bridge, ports, CEP, the panel, and the screenshot pipeline. |
 | [`docs/fragile-areas-server.md`](docs/fragile-areas-server.md) | Tool schemas and the MCP protocol, the journal's caches, packaging and binaries. |
-| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 56 recipes run by hand against a live AE 2026. |
+| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 57 recipes run by hand against a live AE 2026. |
 
 **Nothing in `docs/` is generated** — hand-written, like this file. The generated
 prose is elsewhere and is called out below.
@@ -33,7 +33,7 @@ table is how that one went stale once already.
 
 ## What this project is
 
-An MCP server that lets an LLM drive Adobe After Effects 2026: comps, layers, transforms, keyframes (with full interpolation/easing/tangent control), expressions, effects, text, shapes, masks, markers, footage import, audio cue placement, comp snapshots and diffs, Motion Graphics template export, one-off screenshots and contact sheets, bulk batches, Project panel folders and safe deletion, layer structure (move, duplicate, parent, track matte, precompose), layer timing and Time Remap. 97 tools. macOS and Windows — the only two platforms AE runs on.
+An MCP server that lets an LLM drive Adobe After Effects 2026: comps, layers, transforms, keyframes (with full interpolation/easing/tangent control), expressions, effects, text, shapes, masks, markers, footage import, audio cue placement, comp snapshots and diffs, Motion Graphics template export, one-off screenshots and contact sheets, bulk batches, Project panel folders and safe deletion, layer structure (move, duplicate, parent, track matte, precompose), layer timing and Time Remap, effect stack structure (inspect, add, remove, duplicate, reorder). 100 tools. macOS and Windows — the only two platforms AE runs on.
 
 It ships five ways, and the ordering below is deliberate — it goes from least to most that the user has to already have installed:
 
@@ -86,6 +86,7 @@ One line each. The annotated version — why each file is the way it is — is i
 | `packages/jsx/project.jsx` | The Project panel hierarchy: `get_project_tree`, folders, rename, move, and `delete_project_item`, which refuses any deletion that would reach beyond what it analyzed — After Effects' own `remove()` takes layers and Render Queue items without asking. Ids only; 0 is the root. |
 | `packages/jsx/structure.jsx` | Layer structure: `get_layer_structure`, `move_layer`, `set_layer_parent`, `set_track_matte`, `precompose_layers`. Ids only. `precompose_layers` refuses every case where After Effects would re-wire the comp silently — moveAll:true recreates the moved layers with new ids. |
 | `packages/jsx/timing.jsx` | `set_layer_timing` / `set_time_remap`, and the timing record `get_layer_structure` carries. One planner shared with `set_layer`'s timing fields: checked before the first write, written stretch → startTime → inPoint → outPoint (inPoint drags outPoint), read back, restored on failure. Disabling a customized Time Remap is refused — it deletes every key. |
+| `packages/jsx/effectstack.jsx` | The Effects stack's structure: `get_effect_stack`, `add_effect`, `remove_effect`, `duplicate_effect`, `move_effect`. Effects have no id, so a locator (index + matchName + name + fingerprint) is checked against the live stack; every write is verified by fingerprint and refused when expressions in the comp would break. **No regular expressions in its expression scanner** — ExtendScript hung on one. |
 | `packages/jsx/batch.jsx` | `run_batch` — inline under 500 ops, otherwise a chunked job. |
 | `packages/jsx/vision.jsx` | `saveFrameToPng` wrapper, the resolution factor, contact-sheet tiles. |
 | `packages/jsx/footage.jsx` | Import, footage layers, the SVG viewBox check, the shared solid/`usedIn` helpers. |

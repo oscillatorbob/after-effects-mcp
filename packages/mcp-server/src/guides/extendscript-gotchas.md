@@ -27,6 +27,15 @@ can call any tool as a function and keep to the DOM for the part no tool covers.
   where a scene build stays well inside the limit (reported from a
   fourteen-scene, thousand-layer build). Split a big build by scene, not by op;
   the same op repeated hundreds of times is `run_batch`, which chunks itself.
+- **A complex regular expression can hang ExtendScript inside one `exec()`.**
+  A pattern with an optional alternation prefix ahead of lazy `[^()]*?` groups
+  — instant in a browser — never returned in After Effects 26.5, on a
+  one-line input, and an iteration cap around the loop could not help because
+  the call never came back; AE had to be force-quit. Keep patterns simple, or
+  scan with `indexOf`/`charAt`.
+- **Building a long string with `push` + `join` slows down fast**: 2,000
+  pieces took 4 ms, 8,000 took 70 ms. Doubling (`s = s + s`) built 200,000
+  characters in 2 ms.
 - **Source size** — the script plus every library it names — is capped at 1 MB
   per call, because libraries are inlined into the call, so every byte travels
   every time.
@@ -188,17 +197,20 @@ that does it.
 ## Effects
 
 - **Effects are addressed by display name, and the name is not unique.**
-  `effects.property("Slider Control")` returns the *first* effect with that
-  name, so a second slider added under the default name is unreachable by
-  name and a write meant for it silently drives the first. Name each control
-  as you add it (`fx.name = "Zoom"`), or remove a same-named one first; from
-  outside, `list_effects` reports every effect's name and index and
-  `set_effect_param` takes the index.
-- **Adding an effect invalidates every effect reference held on that layer**,
-  a second Slider Control included: the group re-indexes and an earlier
-  handle throws `Object is invalid`, the way a shape node reference goes
-  stale when a sibling is added. Add every effect first, then resolve each by
-  name and set its parameters.
+  AE names a second Slider Control "Slider Control 2" as it adds it, but a
+  rename to a name already in use is accepted, and then
+  `effects.property("Zoom")` returns the *first* effect with that name — a
+  write meant for the other silently drives the first. Name each control
+  uniquely as you add it (`fx.name = "Zoom"`); from outside,
+  `get_effect_stack` reports every effect's index, name, matchName and
+  occurrence, and `move_effect` / `duplicate_effect` / `remove_effect`
+  take that locator.
+- **Any structural change invalidates every effect reference held on that
+  layer** — adding, removing, duplicating or `moveTo`, the moved or
+  duplicated effect included: the group re-indexes and an earlier handle
+  throws `Object is invalid`, the way a shape node reference goes stale when
+  a sibling is added. Make the structural changes first, then resolve each
+  effect afresh and set its parameters.
 
 ## Shapes
 

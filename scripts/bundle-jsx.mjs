@@ -40,6 +40,7 @@ const order = [
   "project.jsx",
   "structure.jsx",
   "timing.jsx",
+  "effectstack.jsx",
   "helpers.jsx",
   "raw.jsx",
 ];

@@ -91,6 +91,17 @@ parameter name. If you do not know a matchName, `list_available_effects({filter:
 entries and takes seconds every time. `list_effects` shows what is already on a
 layer with every parameter.
 
+**An effect has no id**, so the stack is edited by locator. `get_effect_stack`
+lists a layer's effects top to bottom with `effectIndex`, `name`, `matchName`,
+`occurrence` and the `path` the property tools take; `remove_effect`,
+`duplicate_effect` and `move_effect` take `{effectIndex, matchName,
+effectName, fingerprint}` copied from it, and refuse one that no longer
+matches — the fingerprint is what tells two same-named copies apart. Indices
+shift on every add, remove, duplicate or move, names repeat ("Bloom" twice is
+allowed), so read the stack again after each structural change. Removing an
+effect that an expression in the comp names is refused: After Effects would
+disable that expression without a word.
+
 ## Identify things by id, never by index
 
 Every comp and layer has a stable numeric `id`. Layer `index` is a 1-based

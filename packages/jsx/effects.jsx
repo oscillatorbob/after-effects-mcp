@@ -28,21 +28,7 @@ OPS.list_effects = noUndo(function (args) {
   return out;
 });
 
-OPS.add_effect = function (args) {
-  var c = getCompById(args.compId);
-  var l = getLayerById(c, args.layerId);
-  var fx = l.property("Effects");
-  var eff = fx.addProperty(args.matchName);
-  return __serializeEffect(eff);
-};
-
-OPS.remove_effect = function (args) {
-  var c = getCompById(args.compId);
-  var l = getLayerById(c, args.layerId);
-  var fx = l.property("Effects");
-  fx.property(args.effectIndex).remove();
-  return { ok: true };
-};
+// add_effect and remove_effect are the effect stack's: effectstack.jsx.
 
 OPS.set_effect_param = function (args) {
   var c = getCompById(args.compId);
