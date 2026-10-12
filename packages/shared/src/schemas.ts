@@ -695,30 +695,6 @@ export const ClearExpression = z.object({ compId: z.number(), layerId: z.number(
 // ---------- effects ----------
 export const ListEffects = z.object({ compId: z.number(), layerId: z.number() });
 // AddEffect and RemoveEffect live with the effect stack, below.
-export const SetEffectParam = crossField(crossField(
-  z.object({
-    compId: z.number(),
-    layerId: z.number(),
-    effectIndex: z.number().int().positive(),
-    paramName: z.string().optional()
-      .describe("The parameter's display name as list_effects reports it, e.g. 'Blurriness'."),
-    paramMatchName: z.string().optional()
-      .describe("The parameter's matchName, e.g. 'ADBE Gaussian Blur 2-0001'. Tried before paramName when both are given, so it is the one to use when a display name is ambiguous or localised."),
-    value: VecAny,
-    time: z.number().optional(),
-    keyframe: z.boolean().default(false),
-  }),
-  // Neither one is not a call with a default — it is a call that resolves no
-  // property at all, and `effects.jsx` answers it with a bare "Effect param not
-  // found", which reads like the *name* was wrong rather than absent.
-  // Both together is legal and useful: matchName wins, name is the fallback.
-  {
-    kind: "atLeastOne",
-    fields: ["paramName", "paramMatchName"],
-    then: "list_effects on the layer reports both for every parameter of every effect.",
-  }
-), TIME_NEEDS_KEYFRAME);
-export const SetEffectEnabled = z.object({ compId: z.number(), layerId: z.number(), effectIndex: z.number().int().positive(), enabled: z.boolean() });
 // The result is cached for the AE session because enumerating app.effects is
 // slow enough to time the bridge out (issue #26). `filter` is a case-insensitive
 // substring match over displayName + matchName + category, so an agent looking
@@ -1187,6 +1163,38 @@ export const EffectLocator = z
       .describe("The effect's fingerprint exactly as get_effect_stack reported it. Pass it when two effects share matchName AND name (two \"Bloom\"s): after a reorder, index + matchName + name can match the other one, and the fingerprint — a hash of every readable value, key and expression — is what tells them apart. It changes when the effect is edited, so read the stack again after a property write."),
   })
   .strict();
+export const SetEffectParam = crossField(crossField(
+  z.object({
+    compId: z.number(),
+    layerId: StructLayerId,
+    effect: EffectLocator.describe("The one effect to write, as get_effect_stack reported it — never a bare index."),
+    paramName: z.string().optional()
+      .describe("The parameter's display name as list_effects reports it, e.g. 'Blurriness'."),
+    paramMatchName: z.string().optional()
+      .describe("The parameter's matchName, e.g. 'ADBE Gaussian Blur 2-0001'. Tried before paramName when both are given, so it is the one to use when a display name is ambiguous or localised."),
+    value: VecAny,
+    time: z.number().optional(),
+    keyframe: z.boolean().default(false),
+  }).strict(),
+  // Neither one is not a call with a default — it is a call that resolves no
+  // property at all, and `effects.jsx` answers it with a bare "Effect param not
+  // found", which reads like the *name* was wrong rather than absent.
+  // Both together is legal and useful: matchName wins, name is the fallback.
+  {
+    kind: "atLeastOne",
+    fields: ["paramName", "paramMatchName"],
+    then: "list_effects on the layer reports both for every parameter of every effect.",
+  }
+), TIME_NEEDS_KEYFRAME);
+export const SetEffectEnabled = z
+  .object({
+    compId: z.number(),
+    layerId: StructLayerId,
+    effect: EffectLocator.describe("The one effect to switch, as get_effect_stack reported it — never a bare index."),
+    enabled: z.boolean(),
+  })
+  .strict();
+
 const EffectLayerId = StructLayerId;
 const IgnoreExpressionReferences = z.boolean().default(false)
   .describe("Expressions in this comp that name this effect, or address effects by an index this change shifts, would stop working or silently read another effect — so the call is refused and the expressions are listed. true proceeds anyway and reports what broke. Leave false unless the user agreed.");

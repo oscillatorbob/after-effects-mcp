@@ -30,33 +30,6 @@ OPS.list_effects = noUndo(function (args) {
 
 // add_effect and remove_effect are the effect stack's: effectstack.jsx.
 
-OPS.set_effect_param = function (args) {
-  var c = getCompById(args.compId);
-  var l = getLayerById(c, args.layerId);
-  var eff = l.property("Effects").property(args.effectIndex);
-  var p = null;
-  if (args.paramMatchName) {
-    for (var i = 1; i <= eff.numProperties; i++) {
-      if (eff.property(i).matchName === args.paramMatchName) { p = eff.property(i); break; }
-    }
-  }
-  if (!p && args.paramName) p = eff.property(args.paramName);
-  if (!p) throw new Error("Effect param not found");
-  // `time` and `keyframe: true` go together — a `time` alone used to become a
-  // static write that ignored it whenever the parameter had no keys yet.
-  var keyed = __checkTimeKeyframe(args.time, args.keyframe, "set_effect_param");
-  if (keyed) p.setValueAtTime(args.time, args.value);
-  else p.setValue(args.value);
-  return { ok: true, keyed: keyed };
-};
-
-OPS.set_effect_enabled = function (args) {
-  var c = getCompById(args.compId);
-  var l = getLayerById(c, args.layerId);
-  l.property("Effects").property(args.effectIndex).enabled = !!args.enabled;
-  return { ok: true };
-};
-
 // Enumerating app.effects is very slow — around 250 entries in AE 26.3, slow
 // enough that a hand-rolled loop over it in run_jsx blocks the panel's socket
 // past the server's timeout and presents as a dead bridge (issue #26). The

@@ -323,7 +323,7 @@ await check("the published schema still advertises the same defaults and still d
 
 const TIME_CASES = [
   ["set_transform", { compId: 1, layerId: 2, properties: { opacity: 10 } }],
-  ["set_effect_param", { compId: 1, layerId: 2, effectIndex: 1, paramName: "Blurriness", value: 5 }],
+  ["set_effect_param", { compId: 1, layerId: 2, effect: { effectIndex: 1, matchName: "ADBE Gaussian Blur 2" }, paramName: "Blurriness", value: 5 }],
   ["set_shape_property", { compId: 1, layerId: 2, contentPath: ["Contents", "Fill 1"], property: "Opacity", value: 50 }],
 ];
 

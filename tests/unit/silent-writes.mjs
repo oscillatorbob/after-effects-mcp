@@ -737,7 +737,6 @@ check("time without keyframe, and keyframe without time, are refused by all thre
   addComp(ctx, 1, [l]);
   const cases = [
     ["set_transform", { compId: 1, layerId: 12, properties: { opacity: 5 } }],
-    ["set_effect_param", { compId: 1, layerId: 12, effectIndex: 1, paramName: "Blurriness", value: 9 }],
     ["set_shape_property", { compId: 1, layerId: 12, contentPath: ["Contents", "Fill 1"], property: "Color", value: [0, 1, 0, 1] }],
   ];
   for (const [op, args] of cases) {
@@ -753,24 +752,10 @@ check("time without keyframe, and keyframe without time, are refused by all thre
     assert.equal(keyed.ok, true, keyed.error);
     assert.equal(keyed.result.keyed, true);
   }
-  assert.deepEqual(plain(blur.keys), [[2, 9]]);
+  // Effect setter time/keyframe coverage lives in effect-stack.mjs (C5.1).
   assert.deepEqual(plain(fillColor.keys), [[2, [0, 1, 0, 1]]]);
 });
 function opacityWrites(l) { return l.__groups.Transform.property("ADBE Opacity").writes.length; }
-
-check("a static effect / shape write with neither time nor keyframe still works", () => {
-  const { ctx, call } = load();
-  const l = avLayer(ctx, 12);
-  const blur = new Prop("Blurriness", "ADBE Gaussian Blur 2-0001", 0);
-  const fx = new Group("Effects", "ADBE Effect Parade", [new Group("Gaussian Blur", "ADBE Gaussian Blur 2", [blur])]);
-  const base = l.property;
-  l.property = (k) => (k === "Effects" ? fx : base(k));
-  addComp(ctx, 1, [l]);
-  const r = call("set_effect_param", { compId: 1, layerId: 12, effectIndex: 1, paramName: "Blurriness", value: 7 });
-  assert.equal(r.ok, true, r.error);
-  assert.equal(r.result.keyed, false);
-  assert.equal(blur.value, 7);
-});
 
 // ---------------------------------------------------------------------------
 // add_mask / set_mask atomicity

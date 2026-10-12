@@ -235,7 +235,13 @@ function __esCompare(prints, expected) {
   if (prints.length !== expected.length) return "the stack has " + prints.length + " effects, expected " + expected.length;
   for (var i = 0; i < expected.length; i++) {
     var want = expected[i], got = prints[i];
-    if (want.body !== got.body || (want.name !== null && want.name !== got.name)) {
+    var nameOk = want.name === null || want.name === got.name;
+    if (want.matchName === got.matchName && nameOk && want.body !== got.body) {
+      // Same effect in the same place, different contents: say that, not
+      // "X, expected X".
+      return "effect " + (i + 1) + " (" + got.matchName + " \"" + got.name + "\") changed — a value, key, expression or its on/off state differs";
+    }
+    if (want.body !== got.body || !nameOk) {
       return "effect " + (i + 1) + " is " + got.matchName + " \"" + got.name + "\", expected " + want.matchName + " \"" + (want.name === null ? "(any name)" : want.name) + "\"";
     }
   }
@@ -687,5 +693,332 @@ OPS.move_effect = function (args) {
   var out = { effect: __esRecord(fx, dest), previousIndex: s, actualIndex: dest, changed: true, numEffects: n, effects: __esCompact(fx) };
   if (hz.length) out.expressionReferencesIgnored = hz;
   if (broken.length) out.expressionsBroken = broken;
+  return out;
+};
+
+// ---------------------------------------------------------------------------
+// set_effect_enabled / set_effect_param — writes to one effect, by locator
+// ---------------------------------------------------------------------------
+// Both used to take a bare effectIndex, which after any add/remove/duplicate/
+// move names whatever effect now sits there. Now: the effect by the C5 locator
+// (__esResolve, fingerprint included), the lock refused by the C5 policy, the
+// value through B1 (set_property_values for a static write, its validators for
+// a key), and afterwards the whole stack checked by fingerprint — every other
+// effect identical, and on the target everything but the one thing written.
+// A failure puts the write back and says exactly what was and was not restored.
+
+// The target, resolved and fingerprinted before anything is written.
+function __esTarget(args, op) {
+  var t = __esLayerArgs(args);
+  var fx = __esRequireParade(t.l, op);
+  __esRequireUnlocked(t.l, op);
+  var i = __esResolve(fx, args.effect, "effect", op);
+  return { c: t.c, l: t.l, i: i, before: __esRecord(fx, i), prints: __esPrints(fx) };
+}
+
+// A print's body is "matchName#on|off#" followed by one line per parameter.
+// The header is split off by length, not by searching for "#": nothing is
+// assumed about what a matchName or a value contains.
+function __esBodyHead(pr) {
+  var on = pr.body.substring(pr.matchName.length + 1, pr.matchName.length + 4) === "on#";
+  return pr.matchName + "#" + (on ? "on" : "off") + "#";
+}
+
+// The stack now against the stack before: every other effect identical, the
+// target identical apart from what `allowed(beforePrint, nowPrint)` excuses.
+// Returns the first difference as a sentence, or null.
+function __esUnintended(t, allowed) {
+  var now = __esPrints(__esParade(t.l));
+  if (now.length !== t.prints.length) return "the stack went from " + t.prints.length + " to " + now.length + " effects";
+  for (var e = 0; e < now.length; e++) {
+    if (e === t.i - 1) {
+      var why = allowed(t.prints[e], now[e]);
+      if (why) return why;
+    } else if (now[e].full !== t.prints[e].full) {
+      return "effect " + (e + 1) + " (" + now[e].matchName + " \"" + now[e].name + "\") changed too";
+    }
+  }
+  return null;
+}
+
+// Undo this call's write with `restore` (null: nothing of this call landed),
+// then verify the whole stack against the before-prints. The sentence says
+// exactly which of the two held — never "nothing changed" unless the stack
+// reads as it did.
+function __esRollback(t, restore) {
+  var restoreNote = null;
+  if (restore) {
+    try { restore(); } catch (e) { restoreNote = "putting the value back failed (" + __pwMsg(e) + ")"; }
+  }
+  var still = __esCompare(__esPrints(__esParade(t.l)), t.prints);
+  if (!restoreNote && still === null) {
+    return restore ? "The write was put back and the whole stack verified as it was before the call." :
+      "Nothing of this call landed, and the whole stack verified as it was before the call.";
+  }
+  return "Rollback was INCOMPLETE: " +
+    (restoreNote ? restoreNote + "; " : (restore ? "the write was put back, but " : "nothing of this call landed to put back, but ")) +
+    (still === null ? "the stack nevertheless reads as it was" : "the stack still differs — " + still) +
+    ". Read it with get_effect_stack and inspect_property_tree before retrying; Edit > Undo reverts the whole call.";
+}
+
+// How far a requested key time can be from where After Effects stores it —
+// and, equally, how close two distinct keys can be. Measured on 26.5x89 in a
+// 30 fps comp: AE rounds a key time to the nearest frameDuration/1024 (1/30720
+// s): at 1 s, offsets of 0.25, 0.40 and 0.49 of that step land ON the key at
+// 1 s, 0.51 to 1.4 make a distinct key one step later, 1.6 and 2 two steps
+// later; 0.0123 → 0.0123046875. Past that, float32 spacing takes over (2^-11 s
+// at 4096–8192 s, 2^-10 s at 8192–16384 s: 10000 + 1/120 is stored as
+// 10000.0087890625, 0.00046 s off, and 10000 + 1e-5 lands ON the key at
+// 10000). Every measured error was within one such step and no two distinct
+// keys were closer than one. This tolerance only confirms that a key which
+// demonstrably changed is the one asked for — it never stands in for a change:
+// one step is also the gap between two distinct keys. Never relative:
+// __pwClose's 1e-6 × t is 0.01 s at t = 10000 and took a key 1/120 s away for
+// the one written.
+function __esFloat32Spacing(t) {
+  var a = Math.abs(t);
+  if (!(a > 0)) return 0;
+  var e = Math.floor(Math.log(a) / Math.LN2);
+  if (Math.pow(2, e + 1) <= a) e++;
+  if (Math.pow(2, e) > a) e--;
+  return Math.pow(2, e - 23);
+}
+function __esKeyTimeTol(t, frameDuration) {
+  var grid = frameDuration > 0 ? frameDuration / 1024 : 1 / 30720;
+  return Math.max(grid, __esFloat32Spacing(t)) + 1e-12;
+}
+
+// Everything about one parameter a write could disturb besides the value it
+// meant to set: every key (stored time, value, interpolation) and the
+// expression with its on/off state.
+function __esParamState(p) {
+  var s = { keys: [], expr: "", exprOn: false };
+  var n = 0;
+  try { n = p.numKeys; } catch (e) { n = 0; }
+  for (var k = 1; k <= n; k++) {
+    var v = p.keyValue(k);
+    var ii = null, oi = null;
+    try { ii = p.keyInInterpolationType(k); oi = p.keyOutInterpolationType(k); } catch (e2) {}
+    s.keys.push({ t: p.keyTime(k), v: v instanceof Array ? v.slice(0) : v, ii: ii, oi: oi });
+  }
+  try { s.expr = p.canSetExpression ? p.expression : ""; s.exprOn = !!p.expressionEnabled; } catch (e3) {}
+  return s;
+}
+function __esSameKey(a, b) { return a.t === b.t && __pwSame(a.v, b.v) && a.ii === b.ii && a.oi === b.oi; }
+function __esExprProblem(was, now, pname) {
+  if (was.expr === now.expr && was.exprOn === now.exprOn) return null;
+  return "the expression on \"" + pname + "\" changed as well (" + (was.expr === now.expr ? "on/off " + was.exprOn + " → " + now.exprOn : "its text") + ")";
+}
+
+OPS.set_effect_enabled = function (args) {
+  var op = "set_effect_enabled";
+  var t = __esTarget(args, op);
+  var want = !!args.enabled;
+  var was = t.before.enabled;
+  if (was === want) {
+    return { changed: false, previousEnabled: was, enabled: was, before: t.before, after: t.before, note: "Already " + (was ? "on" : "off") + "; nothing was written." };
+  }
+  __esParade(t.l).property(t.i).enabled = want;
+  var problem = null;
+  if (__esParade(t.l).property(t.i).enabled !== want) problem = "the write did not land: effect " + t.i + " still reads enabled " + was;
+  else {
+    // On the target only the on/off flag may differ.
+    problem = __esUnintended(t, function (b, n) {
+      var flipped = b.matchName + "#" + (want ? "on" : "off") + "#" + b.body.substring(__esBodyHead(b).length);
+      return (n.body === flipped && n.name === b.name) ? null : "a parameter or the name of effect " + t.i + " changed as well";
+    });
+  }
+  if (problem) {
+    throw new Error(op + ": " + problem + ". " + __esRollback(t, function () { __esParade(t.l).property(t.i).enabled = was; }));
+  }
+  return { changed: true, previousEnabled: was, enabled: want, before: t.before, after: __esRecord(__esParade(t.l), t.i) };
+};
+
+OPS.set_effect_param = function (args) {
+  var op = "set_effect_param";
+  var keyed = __checkTimeKeyframe(args.time, args.keyframe, op);
+  var t = __esTarget(args, op);
+  var eff = __esParade(t.l).property(t.i);
+  var effLabel = "effect " + t.i + " (" + eff.matchName + " \"" + eff.name + "\")";
+
+  // The parameter: a direct parameter of this effect, matchName first and the
+  // display name as the fallback. Two matches is refused, never the first.
+  var pi = 0, matches = 0, j;
+  if (args.paramMatchName) {
+    for (j = 1; j <= eff.numProperties; j++) if (eff.property(j).matchName === args.paramMatchName) { pi = j; matches++; }
+  }
+  if (!matches && args.paramName) {
+    for (j = 1; j <= eff.numProperties; j++) if (eff.property(j).name === args.paramName) { pi = j; matches++; }
+  }
+  var asked = (args.paramMatchName ? "\"" + args.paramMatchName + "\"" : "") + (args.paramMatchName && args.paramName ? " / " : "") + (args.paramName ? "\"" + args.paramName + "\"" : "");
+  if (matches === 0) throw new Error(op + ": " + effLabel + " has no parameter " + asked + ". inspect_property_tree with the effect's path lists them. Nothing was changed.");
+  if (matches > 1) throw new Error(op + ": " + asked + " matches " + matches + " parameters of " + effLabel + ". Pass paramMatchName, or use inspect_property_tree and set_property_values with the exact path. Nothing was changed.");
+  var path = [__ES_PARADE, t.i, pi];
+  var p = eff.property(pi);
+  var pmn = p.matchName, pname = p.name;
+  if (__itIsGroup(p)) throw new Error(op + ": " + asked + " on " + effLabel + " is a group, not a parameter — inspect_property_tree and set_property_values reach what is inside it. Nothing was changed.");
+
+  var written, restore = null, problem = null;
+  var S0 = __esParamState(p);
+  if (!keyed) {
+    // ---- static: B1 validates, writes, reads back and rolls itself back ----
+    var prevRaw = __pwRead(p, __pwExpressionOn(p), t.c.time);
+    var res;
+    try {
+      res = OPS.set_property_values({ compId: t.c.id, layerId: t.l.id, updates: [{ path: path, value: args.value }] });
+    } catch (eB) {
+      // B1's sentence covers its own write. It cannot see the rest of the
+      // stack, so its "nothing changed" is repeated only once the whole stack
+      // verifies as it was; otherwise the error says what still differs.
+      var m = __pwMsg(eB);
+      if (m.indexOf("set_property_values: ") === 0) m = m.substring("set_property_values: ".length);
+      else if (m.indexOf("set_property_values on ") === 0) m = m.substring("set_property_values on ".length);
+      var still = __esCompare(__esPrints(__esParade(t.l)), t.prints);
+      if (still === null) throw new Error(op + " on " + effLabel + ": " + m);
+      var cut = -1, ends = [". Nothing had been written", ". Rolled back every write", ". Rollback was INCOMPLETE", ". Nothing was changed"];
+      for (var c2 = 0; c2 < ends.length; c2++) { var at2 = m.indexOf(ends[c2]); if (at2 >= 0 && (cut < 0 || at2 < cut)) cut = at2; }
+      var head = cut >= 0 ? m.substring(0, cut) : m;
+      var b1Rolled = cut >= 0 && m.indexOf(". Rolled back every write") === cut;
+      throw new Error(op + " on " + effLabel + ": " + head + ". Rollback was INCOMPLETE: " +
+        (b1Rolled ? "set_property_values put its own write back, but " : "") +
+        "the stack still differs — " + still + ". Read it with get_effect_stack and inspect_property_tree before retrying; Edit > Undo reverts the whole call.");
+    }
+    written = res.updates[0];
+    restore = function () { walkProperty(t.l, path).setValue(prevRaw); };
+    // The value is B1's to verify; everything else about the parameter is ours.
+    var S1s = __esParamState(walkProperty(t.l, path));
+    if (S1s.keys.length !== 0) problem = "\"" + pname + "\" gained " + S1s.keys.length + " keyframe(s)";
+    else problem = __esExprProblem(S0, S1s, pname);
+  } else {
+    // ---- one key: B1's value rules, AE's own key, the key read back ----
+    var vt = __pvtName(p.propertyValueType);
+    var label = "\"" + pname + "\" (" + pmn + ", " + vt + ")";
+    var isVec = __PW_VECTOR_DIMS[vt] !== undefined;
+    if (vt !== "OneD" && vt !== "COLOR" && !isVec) throw new Error(op + ": " + label + " cannot be keyed by this tool — set_keyframes with the path from inspect_property_tree handles every keyable type. Nothing was changed.");
+    var canVary = true;
+    try { canVary = p.canVaryOverTime; } catch (eC) {}
+    if (!canVary) throw new Error(op + ": " + label + " cannot be animated. Nothing was changed.");
+    var v = args.value, w;
+    if (vt === "OneD") {
+      if (!__pwIsNum(v)) throw new Error(op + ": " + label + " takes a single number, got " + __pwJson(v) + ". Nothing was changed.");
+      var dd = false;
+      try { dd = !!p.isDropdownEffect; } catch (eD) {}
+      if (dd && !__pwIsInt(v)) throw new Error(op + ": " + label + " is a menu and takes a whole number, got " + v + ". Nothing was changed.");
+      var rr = __pwRange(p, v);
+      if (rr) throw new Error(op + ": " + label + ": " + v + " " + rr + ". Nothing was changed.");
+      w = v;
+    } else {
+      var dims = isVec ? __PW_VECTOR_DIMS[vt] : 4;
+      var okLen = vt === "COLOR" ? (__pwIsArray(v) && (v.length === 3 || v.length === 4)) : (__pwIsArray(v) && v.length === dims);
+      if (!okLen) throw new Error(op + ": " + label + " takes " + (vt === "COLOR" ? "[r, g, b] or [r, g, b, a]" : "exactly " + dims + " numbers") + ", got " + __pwJson(v) + ". Nothing was changed.");
+      var np = __pwNumbers(p, v);
+      if (np) throw new Error(op + ": " + label + ": " + np + ". Nothing was changed.");
+      w = v.slice(0);
+      if (vt === "COLOR" && w.length === 3) { var cur = p.valueAtTime(args.time, true); w.push(cur && cur.length === 4 ? cur[3] : 1); }
+    }
+    try { p.setValueAtTime(args.time, w); }
+    catch (eK) { throw new Error(op + ": After Effects refused " + __pwJson(w) + " for " + label + " at " + args.time + " s: " + __pwMsg(eK) + ". " + __esRollback(t, null)); }
+
+    // Which key did the write make or change? Decided by comparing the key
+    // list before and after by STORED time — exact, since an untouched key
+    // keeps its stored time to the bit — and never by "the nearest key".
+    var tol = __esKeyTimeTol(args.time, t.c.frameDuration);   // one stored-time step at this time
+    var S1 = __esParamState(walkProperty(t.l, path));
+    var K0 = S0.keys, K1 = S1.keys, land = -1, landNew = false, kk, kj;
+    if (K1.length === K0.length + 1) {
+      var fresh = [];
+      for (kk = 0; kk < K1.length; kk++) {
+        var known = false;
+        for (kj = 0; kj < K0.length; kj++) if (K0[kj].t === K1[kk].t) { known = true; break; }
+        if (!known) fresh.push(kk);
+      }
+      if (fresh.length === 1) { land = fresh[0]; landNew = true; }
+      else problem = "the keys of \"" + pname + "\" moved: " + fresh.length + " key times are new";
+    } else if (K1.length === K0.length) {
+      var changed = [];
+      for (kk = 0; kk < K1.length; kk++) {
+        if (K1[kk].t !== K0[kk].t) { problem = "the key at " + K0[kk].t + " s of \"" + pname + "\" moved to " + K1[kk].t + " s"; break; }
+        if (!__esSameKey(K1[kk], K0[kk])) changed.push(kk);
+      }
+      if (!problem && changed.length) {
+        // A key changed: the write is the changed key nearest the requested
+        // time, within one stored-time step (AE stores a time that close ON the
+        // existing key — 10000 + 1e-5 updates the key at 10000).
+        var best = -1, bestD = Infinity;
+        for (kj = 0; kj < changed.length; kj++) {
+          var d = Math.abs(K1[changed[kj]].t - args.time);
+          if (d < bestD) { bestD = d; best = changed[kj]; }
+        }
+        if (bestD <= tol) land = best;
+      } else if (!problem) {
+        // Nothing changed. That is a no-op on a key only if the requested time
+        // IS that key's stored time: one storage step is also the closest two
+        // distinct keys can be (1 s and 1 + (1/30)/1024 s are two keys), so
+        // proximity cannot tell a no-op from a write that never landed.
+        for (kk = 0; kk < K1.length; kk++) if (K1[kk].t === args.time && __pwSame(K1[kk].v, w)) { land = kk; break; }
+        if (land < 0) {
+          for (kk = 0; kk < K1.length; kk++) {
+            if (Math.abs(K1[kk].t - args.time) <= tol && __pwSame(K1[kk].v, w)) {
+              problem = "no key changed: \"" + pname + "\" already holds " + __pwJson(w) + " at " + K1[kk].t + " s, but that is not the requested " + args.time + " s, and since nothing changed the write cannot be shown to have landed on it rather than been dropped — pass the stored time " + K1[kk].t + " to address that key, or a different value";
+              break;
+            }
+          }
+        }
+      }
+    } else {
+      problem = "\"" + pname + "\" went from " + K0.length + " to " + K1.length + " keys";
+    }
+    if (!problem && land < 0) {
+      var near = -1, nearD = Infinity;
+      for (kk = 0; kk < K1.length; kk++) { var dn = Math.abs(K1[kk].t - args.time); if (dn < nearD) { nearD = dn; near = kk; } }
+      problem = "the key did not land: requested " + __pwJson(w) + " at " + args.time + " s, and After Effects has no such key there" +
+        (near >= 0 ? " (the nearest is " + __pwJson(K1[near].v) + " at " + K1[near].t + " s, " + nearD + " s away — a different key)" : "");
+    }
+    if (land >= 0) {
+      var storedT = K1[land].t;
+      var prevV = landNew ? null : K0[land].v;
+      restore = landNew ?
+        function () { var q = walkProperty(t.l, path); for (var r = 1; r <= q.numKeys; r++) if (q.keyTime(r) === storedT) { q.removeKey(r); return; } } :
+        function () { walkProperty(t.l, path).setValueAtTime(storedT, prevV); };
+      if (!problem && Math.abs(storedT - args.time) > tol) problem = "the key landed at " + storedT + " s, not " + args.time + " s";
+      if (!problem && !__pwSame(K1[land].v, w)) problem = "the key did not land: requested " + __pwJson(w) + " at " + args.time + " s, After Effects reads " + __pwJson(K1[land].v);
+      // Every other key exactly as it was.
+      if (!problem) {
+        var rest0 = [], rest1 = [];
+        for (kk = 0; kk < K0.length; kk++) if (landNew || kk !== land) rest0.push(K0[kk]);
+        for (kk = 0; kk < K1.length; kk++) if (kk !== land) rest1.push(K1[kk]);
+        for (kk = 0; kk < rest0.length && !problem; kk++) {
+          if (!__esSameKey(rest0[kk], rest1[kk])) problem = "the key at " + rest0[kk].t + " s of \"" + pname + "\" changed as well (" + __pwJson(rest0[kk].v) + " → " + __pwJson(rest1[kk].v) + ")";
+        }
+      }
+      written = { previousValue: prevV, actualValue: K1[land].v, storedTime: storedT };
+    }
+    if (!problem) problem = __esExprProblem(S0, S1, pname);
+  }
+  if (problem) throw new Error(op + ": " + problem + ". " + __esRollback(t, restore));
+
+  // ---- the rest of the stack, and the rest of this effect, untouched ----
+  var prefix = "/" + pmn + "=";
+  problem = __esUnintended(t, function (b, n) {
+    function others(pr) {
+      var head = __esBodyHead(pr);
+      var lines = pr.body.substring(head.length).split("\n"), out = [head];
+      for (var k = 0; k < lines.length; k++) if (lines[k].indexOf(prefix) !== 0) out.push(lines[k]);
+      return out.join("\n");
+    }
+    return (others(n) === others(b) && n.name === b.name) ? null : "another parameter (or the name or on/off state) of effect " + t.i + " changed as well";
+  });
+  if (problem) throw new Error(op + ": " + problem + ". " + __esRollback(t, restore));
+
+  var out = {
+    ok: true,
+    keyed: keyed,
+    path: path,
+    param: { name: pname, matchName: pmn, previousValue: written.previousValue, actualValue: written.actualValue, time: keyed ? args.time : null },
+    before: t.before,
+    after: __esRecord(__esParade(t.l), t.i),
+  };
+  if (keyed) out.param.storedTime = written.storedTime;   // where AE keeps the key (nearest frameDuration/1024, or float32 spacing)
+  if (written.expressionEnabled) { out.param.expressionEnabled = true; out.param.evaluatedValue = written.evaluatedValue; }
   return out;
 };

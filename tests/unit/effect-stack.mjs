@@ -26,6 +26,8 @@ const read = (f) => fs.readFileSync(path.join(root, "packages", "jsx", f), "utf8
 
 let passed = 0;
 function check(name, fn) {
+  // ONLY=<name prefix> runs just the matching checks (for bisecting a failure); unset, everything runs.
+  if (process.env.ONLY && !name.startsWith(process.env.ONLY)) return;
   try { fn(); passed++; }
   catch (e) { console.error(`effect-stack FAILED: ${name}`); throw e; }
 }
@@ -38,6 +40,11 @@ var PropertyType = { PROPERTY: 6212, INDEXED_GROUP: 6213, NAMED_GROUP: 6214 };
 var PropertyValueType = { NO_VALUE: 6412, OneD: 6417, COLOR: 6424, LAYER_INDEX: 6421, CUSTOM_VALUE: 6419 };
 var KeyframeInterpolationType = { LINEAR: 6612, BEZIER: 6613, HOLD: 6614 };
 var NEXT_ID = 100, ITEMS = [], WRITES = 0, UNDO = [];
+var BREAK_ENABLED = 0, BREAK_VALUE = 0;   // the next N enabled / value writes are silently dropped, as a write AE did not keep
+var SIDE_EFFECT = null;                   // a one-shot extra change fired by the next write: a sibling or a neighbour that moved too
+var FAIL_SETS = 0;                        // the next N setValue / setValueAtTime / removeKey calls throw (a rollback that cannot land)
+function sideEffect() { if (SIDE_EFFECT) { var f = SIDE_EFFECT; SIDE_EFFECT = null; f(); } }
+function maybeFail(what) { if (FAIL_SETS > 0) { FAIL_SETS--; throw new Error("After Effects error: " + what + " refused (stub)"); } }
 var BREAK_MOVE = 0;   // the next N moveTo calls land one place off, as a move AE did not make
 var BREAK_DUP = 0;    // the next N duplicates lose the copy's expressions
 function W() { WRITES++; }
@@ -116,8 +123,20 @@ LeafH.prototype.__defineGetter__("expression", function () { this._ck(); return 
 LeafH.prototype.__defineSetter__("expression", function (v) { this._ck(); W(); this._l.ex = v; this._l.exOn = v !== ""; });
 LeafH.prototype.__defineGetter__("expressionEnabled", function () { this._ck(); return this._l.exOn; });
 LeafH.prototype.__defineGetter__("expressionError", function () { this._ck(); return this._l.ex ? exprError(this._layer, this._l.ex) : ""; });
-LeafH.prototype.setValue = function (v) { this._ck(); W(); this._l.v = v; };
-LeafH.prototype.setValueAtTime = function (t, v) { this._ck(); W(); this._l.k.push({ t: t, v: v, ii: 6612, oi: 6612 }); this._l.k.sort(function (a, b) { return a.t - b.t; }); };
+LeafH.prototype.__defineGetter__("canVaryOverTime", function () { return true; });
+LeafH.prototype.setValue = function (v) { this._ck(); maybeFail("setValue"); W(); if (BREAK_VALUE > 0) BREAK_VALUE--; else this._l.v = v instanceof Array ? v.slice() : v; sideEffect(); };
+// AE rounds a key time to the nearest frameDuration/1024 (1/30720 s at 30 fps), and past ~100 s to float32 spacing
+// (measured: 0.0123 → 0.01230469, 10000 + 1/120 → 10000.0087890625, 10000 + 1e-5 → 10000). A time that
+// lands on an existing key's stored time updates that key.
+function keyTimeOf(t) { return Math.fround(Math.round(t * 30720) / 30720); }
+LeafH.prototype.setValueAtTime = function (t, v) { this._ck(); maybeFail("setValueAtTime"); W();
+  if (BREAK_VALUE > 0) { BREAK_VALUE--; sideEffect(); return; }
+  var q = keyTimeOf(t);
+  for (var i = 0; i < this._l.k.length; i++) if (this._l.k[i].t === q) { this._l.k[i].v = v; sideEffect(); return; }
+  this._l.k.push({ t: q, v: v, ii: 6612, oi: 6612 }); this._l.k.sort(function (a, b) { return a.t - b.t; }); sideEffect(); };
+LeafH.prototype.nearestKeyIndex = function (t) { this._ck(); var b = 1, d = Infinity; for (var i = 0; i < this._l.k.length; i++) { var x = Math.abs(this._l.k[i].t - t); if (x < d) { d = x; b = i + 1; } } return b; };
+LeafH.prototype.removeKey = function (i) { this._ck(); maybeFail("removeKey"); W(); this._l.k.splice(i - 1, 1); };
+LeafH.prototype.valueAtTime = function (t) { this._ck(); for (var i = 0; i < this._l.k.length; i++) if (Math.abs(this._l.k[i].t - t) < 1e-9) return this._l.k[i].v; return this._l.v; };
 
 function GroupH(mn, nm, leaves, par, gen, layer) { this.matchName = mn; this.name = nm; this._leaves = leaves; this._p = par; this._g = gen; this._layer = layer; }
 GroupH.prototype._ck = function () { if (this._p && this._p.gen !== this._g) invalid(); };
@@ -133,7 +152,7 @@ EffH.prototype.__defineGetter__("name", function () { this._ck(); return this._e
 EffH.prototype.__defineSetter__("name", function (v) { this._ck(); W(); this._e.nm = v; });
 EffH.prototype.__defineGetter__("matchName", function () { this._ck(); return this._e.mn; });
 EffH.prototype.__defineGetter__("enabled", function () { this._ck(); return this._e.on; });
-EffH.prototype.__defineSetter__("enabled", function (v) { this._ck(); W(); this._e.on = !!v; });
+EffH.prototype.__defineSetter__("enabled", function (v) { this._ck(); maybeFail("enabled"); W(); if (BREAK_ENABLED > 0) BREAK_ENABLED--; else this._e.on = !!v; sideEffect(); });
 EffH.prototype.__defineGetter__("propertyIndex", function () { this._ck(); return this._p.list.indexOf(this._e) + 1; });
 EffH.prototype.__defineGetter__("propertyType", function () { return PropertyType.INDEXED_GROUP; });
 EffH.prototype.__defineGetter__("numProperties", function () { this._ck(); return this._e.leaves.length + 1; });
@@ -218,7 +237,7 @@ function load() {
   const ctx = {};
   vm.createContext(ctx);
   vm.runInContext(STUB, ctx, { filename: "stub" });
-  for (const f of ["core.jsx", "ids.jsx", "effects.jsx", "effectstack.jsx"]) vm.runInContext(read(f), ctx, { filename: f });
+  for (const f of ["core.jsx", "ids.jsx", "transforms.jsx", "expressions.jsx", "inspect.jsx", "propwrite.jsx", "effects.jsx", "effectstack.jsx"]) vm.runInContext(read(f), ctx, { filename: f });
   // Every call is bounded: a scanner or loop that stops terminating fails here, loudly, instead of hanging the suite.
   const run = (op, args) => JSON.parse(vm.runInContext(`JSON.stringify(dispatchValue(${JSON.stringify({ op, args })}))`, ctx, { timeout: 10000 }));
   const ok = (op, args) => { const r = run(op, args); assert.equal(r.ok, true, `${op} failed: ${r.error}`); return r.result; };
@@ -604,6 +623,277 @@ check("23. run_batch: an invalid later effect step blocks the whole batch before
   assert.equal(out[1].args.ignoreExpressionReferences, false, "defaults applied per step");
   assert.throws(() => validateBatchOps([good, { op: "move_effect", args: { compId: 1, layerId: 2, effect: L } }]), /Nothing was sent[\s\S]*step 1 /);
   assert.throws(() => validateBatchOps([good, { op: "remove_effect", args: { compId: 1, layerId: 2, effectIndex: 2 } }]), /Nothing was sent[\s\S]*step 1 /);
+});
+
+
+// ---------------------------------------------------------------------------
+// C5.1 — set_effect_enabled and set_effect_param by locator
+// ---------------------------------------------------------------------------
+// Blur, then two Glows both named "Bloom" (radius 10 and 20, so their
+// fingerprints differ), then "Glow 3" (radius 30). Same matchName three times,
+// same display name twice.
+function twins(t) {
+  glows(t);
+  t.js('S._fx.list[1].nm = "Bloom"; S._fx.list[2].nm = "Bloom";');
+  return stack(t).effects;
+}
+const FL = (e) => ({ ...loc(e), fingerprint: e.fingerprint });
+const at = (t) => ({ compId: t.cid, layerId: t.S });
+const ons = (t) => stack(t).effects.map((e) => e.enabled);
+const intensityKeys = (t, i) => t.js("S._fx.list[" + i + "].leaves[2].k.map(function (k) { return [k.t, k.v]; })");
+
+check("C5.1-1/2/3. set_effect_enabled hits exactly the located copy among same-matchName, same-name effects", () => {
+  const t = rig();
+  const e = twins(t);
+  assert.notEqual(e[1].fingerprint, e[2].fingerprint);
+  const r = t.ok("set_effect_enabled", { ...at(t), effect: FL(e[2]), enabled: false });
+  assert.equal(r.changed, true);
+  assert.deepEqual([r.previousEnabled, r.enabled, r.before.enabled, r.after.enabled], [true, false, true, false]);
+  assert.equal(r.after.name, "Bloom");
+  assert.equal(r.after.effectIndex, 3);
+  assert.notEqual(r.after.fingerprint, r.before.fingerprint, "the on/off state is part of the fingerprint");
+  assert.deepEqual(ons(t), [true, true, false, true], "only the second Bloom went off");
+  assert.deepEqual(t.js("radii(S)"), [null, 10, 20, 30]);
+  // Already off: nothing written.
+  const w = t.js("WRITES");
+  const again = t.ok("set_effect_enabled", { ...at(t), effect: FL(stack(t).effects[2]), enabled: false });
+  assert.equal(again.changed, false);
+  assert.equal(t.js("WRITES"), w);
+});
+
+check("C5.1-9. set_effect_param writes exactly the located copy, static through B1 and one key, and reports it", () => {
+  const t = rig();
+  const e = twins(t);
+  const r = t.ok("set_effect_param", { ...at(t), effect: FL(e[1]), paramName: "Glow Radius", value: 42 });
+  assert.equal(r.keyed, false);
+  assert.deepEqual(r.path, ["ADBE Effect Parade", 2, 2]);
+  assert.deepEqual([r.param.matchName, r.param.previousValue, r.param.actualValue], ["ADBE Glo2-0003", 10, 42]);
+  assert.notEqual(r.after.fingerprint, r.before.fingerprint);
+  assert.deepEqual(t.js("radii(S)"), [null, 42, 20, 30], "the other Bloom and Glow 3 untouched");
+  // One key on the second Bloom, then the same time again updates that key.
+  let k = t.ok("set_effect_param", { ...at(t), effect: FL(stack(t).effects[2]), paramMatchName: "ADBE Glo2-0004", value: 3, time: 1, keyframe: true });
+  assert.equal(k.keyed, true);
+  assert.deepEqual([k.param.time, k.param.previousValue, k.param.actualValue], [1, null, 3]);
+  k = t.ok("set_effect_param", { ...at(t), effect: FL(stack(t).effects[2]), paramMatchName: "ADBE Glo2-0004", value: 4, time: 1, keyframe: true });
+  assert.deepEqual([k.param.previousValue, k.param.actualValue], [3, 4]);
+  assert.deepEqual(intensityKeys(t, 2), [[1, 4]]);
+  assert.deepEqual(intensityKeys(t, 1), [], "the first Bloom got no key");
+  // A keyed parameter takes no static value (B1's rule), and nothing is written.
+  t.refused("set_effect_param", { ...at(t), effect: FL(stack(t).effects[2]), paramMatchName: "ADBE Glo2-0004", value: 9 }, /keyframe[\s\S]*Nothing was changed/);
+});
+
+check("C5.1-4/5. a stale locator — after a reorder, or after the effect's own edit — is refused by both tools, a fresh one works", () => {
+  const t = rig();
+  const e = twins(t);
+  const first = FL(e[1]);                                                   // radius-10 Bloom at index 2
+  t.ok("move_effect", { ...at(t), effect: loc(e[1]), after: loc(e[2]) });  // swap: index 2 is now the radius-20 Bloom
+  t.refused("set_effect_enabled", { ...at(t), effect: first, enabled: false }, /fingerprint [0-9a-f]{8}, not [0-9a-f]{8}: it is another effect with the same name/);
+  t.refused("set_effect_param", { ...at(t), effect: first, paramName: "Glow Radius", value: 99 }, /fingerprint/);
+  t.refused("set_effect_param", { ...at(t), effect: { ...first, effectIndex: 9 }, paramName: "Glow Radius", value: 99 }, /past the end/);
+  t.refused("set_effect_enabled", { ...at(t), effect: { ...first, matchName: "ADBE Tint" }, enabled: false }, /not ADBE Tint/);
+  const fresh = stack(t).effects.find((x) => x.fingerprint === first.fingerprint);
+  assert.equal(fresh.effectIndex, 3);
+  const r = t.ok("set_effect_param", { ...at(t), effect: FL(fresh), paramName: "Glow Radius", value: 11 });
+  assert.deepEqual(t.js("radii(S)"), [null, 20, 11, 30]);
+  // That edit changed the fingerprint: the locator read before it is stale now.
+  t.refused("set_effect_enabled", { ...at(t), effect: FL(fresh), enabled: false }, /edited since it was read/);
+  t.ok("set_effect_enabled", { ...at(t), effect: FL(r.after), enabled: false });
+  assert.deepEqual(ons(t), [true, true, false, true]);
+});
+
+check("C5.1-6. a locked layer is refused by both, before anything is written; get_effect_stack still reads it", () => {
+  const t = rig();
+  const e = twins(t);
+  t.js("S.locked = true");
+  t.refused("set_effect_enabled", { ...at(t), effect: FL(e[1]), enabled: false }, /locked[\s\S]*set_layer locked:false/);
+  t.refused("set_effect_param", { ...at(t), effect: FL(e[1]), paramName: "Glow Radius", value: 1 }, /locked[\s\S]*set_layer locked:false/);
+  assert.equal(stack(t).locked, true);
+  assert.equal(stack(t).numEffects, 4);
+});
+
+check("C5.1 parameter resolution: an ambiguous name, a missing one, and the camera are refused", () => {
+  const t = rig();
+  const e = twins(t);
+  t.js('S._fx.list[1].leaves[0].nm = "Glow Radius";');                      // two parameters share a display name
+  const f = FL(stack(t).effects[1]);
+  t.refused("set_effect_param", { ...at(t), effect: f, paramName: "Glow Radius", value: 5 }, /matches 2 parameters[\s\S]*paramMatchName/);
+  t.ok("set_effect_param", { ...at(t), effect: f, paramMatchName: "ADBE Glo2-0003", paramName: "Glow Radius", value: 5 });
+  assert.deepEqual(t.js("radii(S)"), [null, 5, 20, 30]);
+  t.refused("set_effect_param", { ...at(t), effect: FL(stack(t).effects[1]), paramName: "Nope", value: 5 }, /has no parameter "Nope"/);
+  t.refused("set_effect_enabled", { compId: t.cid, layerId: t.cam, effect: FL(e[1]), enabled: false }, /camera/);
+});
+
+check("C5.1-7. a write AE silently drops is refused and reported, never a success", () => {
+  const t = rig();
+  const e = twins(t);
+  t.js("BREAK_ENABLED = 1");
+  let r = t.run("set_effect_enabled", { ...at(t), effect: FL(e[1]), enabled: false });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /did not land[\s\S]*put back and the whole stack verified/);
+  assert.deepEqual(ons(t), [true, true, true, true]);
+  t.js("BREAK_VALUE = 1");
+  r = t.run("set_effect_param", { ...at(t), effect: FL(e[1]), paramName: "Glow Radius", value: 42 });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /did not land[\s\S]*nothing changed/i);
+  assert.deepEqual(t.js("radii(S)"), [null, 10, 20, 30]);
+  // A key that does not land: refused, and an existing key elsewhere survives the cleanup.
+  t.js("S._fx.list[1].leaves[2].k = [{ t: 2, v: 7, ii: 6612, oi: 6612 }]; BREAK_VALUE = 1;");
+  r = t.run("set_effect_param", { ...at(t), effect: FL(stack(t).effects[1]), paramMatchName: "ADBE Glo2-0004", value: 3, time: 1, keyframe: true });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /key did not land/);
+  assert.deepEqual(intensityKeys(t, 1), [[2, 7]], "the unrelated key at 2 s was not removed");
+});
+
+check("C5.1-8. a write that also moves another parameter or a neighbour is caught, put back, and the rollback verified", () => {
+  const t = rig();
+  const e = twins(t);
+  // The write bumps the target's threshold too; the put-back write undoes it — a clean rollback.
+  t.js("SIDE_EFFECT = function () { S._fx.list[1].leaves[0].v += 5; SIDE_EFFECT = function () { S._fx.list[1].leaves[0].v -= 5; }; };");
+  let r = t.run("set_effect_param", { ...at(t), effect: FL(e[1]), paramName: "Glow Radius", value: 42 });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /another parameter[\s\S]*of effect 2 changed as well[\s\S]*put back and the whole stack verified/);
+  assert.deepEqual(t.js("radii(S)"), [null, 10, 20, 30]);
+  // A neighbour moves with an enable; it stays moved, and the error says the rollback is incomplete and what still differs.
+  t.js("SIDE_EFFECT = function () { S._fx.list[3].leaves[1].v = 99; };");
+  r = t.run("set_effect_enabled", { ...at(t), effect: FL(stack(t).effects[1]), enabled: false });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /effect 4 \(ADBE Glo2 "Glow 3"\) changed too[\s\S]*Rollback was INCOMPLETE: the write was put back, but the stack still differs — effect 4/);
+  assert.deepEqual(ons(t), [true, true, true, true], "the target's own flag was put back");
+});
+
+check("C5.1 failed rollback: when the put-back write itself fails, the error says so instead of claiming a restore", () => {
+  const t = rig();
+  const e = twins(t);
+  t.js("SIDE_EFFECT = function () { S._fx.list[2].leaves[1].v = 77; FAIL_SETS = 1; };");
+  const r = t.run("set_effect_param", { ...at(t), effect: FL(e[1]), paramName: "Glow Radius", value: 42 });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /Rollback was INCOMPLETE: putting the value back failed \([^)]*refused \(stub\)\); the stack still differs/);
+  assert.doesNotMatch(r.error, /verified as it was before/);
+});
+
+check("C5.1-10/11/12. schemas: locator only and strict; both WRITE; a bad later locator blocks a batch before anything is sent", () => {
+  const eff = { effectIndex: 2, matchName: "ADBE Glo2", effectName: "Bloom", fingerprint: "0a1b2c3d" };
+  const P = { compId: 1, layerId: 2, effect: eff, paramName: "Glow Radius", value: 1 };
+  const E = { compId: 1, layerId: 2, effect: eff, enabled: false };
+  for (const [op, args] of [["set_effect_param", P], ["set_effect_enabled", E]]) {
+    assert.equal(schemas.OpMutation[op], "write", op);
+    parseOpArgs(op, args);
+    const { effect, ...noEffect } = args;
+    assert.throws(() => parseOpArgs(op, { ...noEffect, effectIndex: 2 }), /effect|unrecognized/i, op + ": the bare effectIndex form is gone");
+    assert.throws(() => parseOpArgs(op, { ...args, bogus: 1 }), /unrecognized|bogus/i);
+    assert.throws(() => parseOpArgs(op, { ...args, effect: { ...eff, fingerprint: "BAD" } }));
+    assert.throws(() => parseOpArgs(op, { ...args, effect: { effectIndex: 2 } }), /matchName/);
+    const good = { op: "add_effect", args: { compId: 1, layerId: 2, matchName: "ADBE Glo2" } };
+    assert.throws(() => validateBatchOps([good, { op, args: { ...args, effect: { ...eff, effectIndex: 0 } } }]), /Nothing was sent[\s\S]*step 1 /);
+  }
+  assert.throws(() => parseOpArgs("set_effect_param", { ...P, paramName: undefined }), /at least one/i);
+  assert.throws(() => parseOpArgs("set_effect_param", { ...P, time: 1 }), /keyframe/);
+});
+
+// ---------------------------------------------------------------------------
+// C5.1 review gaps (reproduced by Codex): each must fail without its fix
+// ---------------------------------------------------------------------------
+check("C5.1 gap 1: a B1 failure that also moved a neighbour does not claim nothing changed", () => {
+  const t = rig();
+  const e = twins(t);
+  // AE drops the radius write, and Glow 3's radius moves to 99 on the way.
+  t.js("BREAK_VALUE = 1; SIDE_EFFECT = function () { S._fx.list[3].leaves[1].v = 99; };");
+  const r = t.run("set_effect_param", { ...at(t), effect: FL(e[1]), paramName: "Glow Radius", value: 42 });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /did not land/);
+  assert.match(r.error, /Rollback was INCOMPLETE[\s\S]*effect 4 \(ADBE Glo2 "Glow 3"\)/);
+  assert.doesNotMatch(r.error, /nothing changed/i, "the neighbour is still at 99, so 'nothing changed' would be false");
+  assert.deepEqual(t.js("radii(S)"), [null, 10, 20, 99]);
+});
+
+check("C5.1 gap 2a: a key write that also changes another key on the same parameter is refused and put back", () => {
+  const t = rig();
+  twins(t);
+  t.js("S._fx.list[1].leaves[2].k = [{ t: 2, v: 7, ii: 6612, oi: 6612 }];");
+  const f = FL(stack(t).effects[1]);
+  t.js("SIDE_EFFECT = function () { S._fx.list[1].leaves[2].k[S._fx.list[1].leaves[2].k.length - 1].v = 99; };");   // the key at 2 s: 7 → 99
+  const r = t.run("set_effect_param", { ...at(t), effect: f, paramMatchName: "ADBE Glo2-0004", value: 3, time: 1, keyframe: true });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /the key at 2 s of "Glow Intensity" changed as well \(7 → 99\)/);
+  assert.match(r.error, /Rollback was INCOMPLETE/, "the 99 cannot be put back by this call, and the error must say so");
+  assert.deepEqual(intensityKeys(t, 1), [[2, 99]], "this call's own key at 1 s was removed again");
+});
+
+check("C5.1 gap 2b: a static write that also changes the parameter's expression is refused and put back", () => {
+  const t = rig();
+  twins(t);
+  t.js('S._fx.list[1].leaves[1].ex = "value + 1"; S._fx.list[1].leaves[1].exOn = true;');
+  const f = FL(stack(t).effects[1]);
+  t.js('SIDE_EFFECT = function () { S._fx.list[1].leaves[1].ex = "value * 2"; SIDE_EFFECT = function () { S._fx.list[1].leaves[1].ex = "value + 1"; }; };');
+  const r = t.run("set_effect_param", { ...at(t), effect: f, paramName: "Glow Radius", value: 42 });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /expression[\s\S]*changed/);
+  assert.match(r.error, /put back and the whole stack verified/);
+  assert.deepEqual(t.js("radii(S)"), [null, 10, 20, 30]);
+  assert.equal(t.js("S._fx.list[1].leaves[1].ex"), "value + 1");
+});
+
+check("C5.1 gap 3: adjacent key times are told apart — a dropped write beside an existing key is not a success", () => {
+  const t = rig();
+  twins(t);
+  t.js("S._fx.list[1].leaves[2].k = [{ t: 10000, v: 7, ii: 6612, oi: 6612 }];");
+  const f = () => FL(stack(t).effects[1]);
+  // AE drops the write at 10000 + 1/120; the key at 10000 already holds the requested 7.
+  t.js("BREAK_VALUE = 1");
+  const r = t.run("set_effect_param", { ...at(t), effect: f(), paramMatchName: "ADBE Glo2-0004", value: 7, time: 10000 + 1 / 120, keyframe: true });
+  assert.equal(r.ok, false, "reading the key at 10000 for a write at 10000.0083 is the bug");
+  assert.match(r.error, /did not land/);
+  assert.deepEqual(intensityKeys(t, 1), [[10000, 7]], "the existing key is untouched by the cleanup");
+  // Landing for real: a second key, 1/120 s later, and the first keeps its value.
+  let ok = t.ok("set_effect_param", { ...at(t), effect: f(), paramMatchName: "ADBE Glo2-0004", value: 3, time: 10000 + 1 / 120, keyframe: true });
+  assert.equal(ok.param.previousValue, null, "a new key, not the one at 10000");
+  assert.deepEqual(intensityKeys(t, 1), [[10000, 7], [10000.0087890625, 3]]);
+  // A time AE stores on the 10000 key (float32 spacing there is 2^-10 s) is that key: an update, matched to it.
+  ok = t.ok("set_effect_param", { ...at(t), effect: f(), paramMatchName: "ADBE Glo2-0004", value: 8, time: 10000 + 1e-5, keyframe: true });
+  assert.equal(ok.param.previousValue, 7);
+  assert.deepEqual(intensityKeys(t, 1), [[10000, 8], [10000.0087890625, 3]]);
+  // A rollback after an update addresses the updated key by its stored time, not the nearest one.
+  t.js("SIDE_EFFECT = function () { S._fx.list[0].leaves[0].v = 55; SIDE_EFFECT = function () { S._fx.list[0].leaves[0].v = 0; }; };");
+  const bad = t.run("set_effect_param", { ...at(t), effect: f(), paramMatchName: "ADBE Glo2-0004", value: 4, time: 10000 + 1 / 120, keyframe: true });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /put back and the whole stack verified/);
+  assert.deepEqual(intensityKeys(t, 1), [[10000, 8], [10000.0087890625, 3]]);
+});
+
+check("C5.1 gap 4: a dropped write one storage step from an unchanged key is not taken for a no-op on it", () => {
+  const t = rig();
+  twins(t);
+  t.js("S._fx.list[1].leaves[2].k = [{ t: 1, v: 7, ii: 6612, oi: 6612 }];");
+  const f = () => FL(stack(t).effects[1]);
+  const g = (1 / 30) / 1024;                                                 // one storage step at 30 fps (measured)
+  const P = (time, value) => ({ ...at(t), effect: f(), paramMatchName: "ADBE Glo2-0004", value, time, keyframe: true });
+  // Codex's reproduction: AE drops the write at 1 + (1/30)/512; the key at 1 s already holds 7, two steps away.
+  t.js("BREAK_VALUE = 1");
+  const r = t.run("set_effect_param", P(1 + 2 * g, 7));
+  assert.equal(r.ok, false, "the requested key is absent; reporting storedTime 1 is the bug");
+  assert.match(r.error, /the key did not land: requested 7 at 1\.0000651[\s\S]*the nearest is 7 at 1 s[\s\S]*a different key/);
+  assert.deepEqual(intensityKeys(t, 1), [[1, 7]]);
+  // Landing for real, that time is a distinct key in After Effects.
+  const n = t.ok("set_effect_param", P(1 + 2 * g, 7));
+  assert.equal(n.param.previousValue, null);
+  assert.equal(n.param.storedTime, 1.0000650882720947);
+  // The one-step boundary: 0.6 of a step rounds to a distinct key one step later, so a dropped write there is refused too.
+  t.js("BREAK_VALUE = 1");
+  const near = t.run("set_effect_param", P(1 + 0.6 * g, 7));
+  assert.equal(near.ok, false, "a dropped write 0.6 of a step from the key at 1 s reported success: proximity was taken for a no-op");
+  assert.match(near.error, /no key changed[\s\S]*already holds 7 at 1 s, but that is not the requested[\s\S]*cannot be shown to have landed/);
+  assert.deepEqual(intensityKeys(t, 1), [[1, 7], [1.0000650882720947, 7]]);
+  // Kept: the same value at the key's own stored time is a no-op on that key.
+  const same = t.ok("set_effect_param", P(1, 7));
+  assert.deepEqual([same.param.previousValue, same.param.storedTime], [7, 1]);
+  // Kept: 0.25 of a step rounds onto the key at 1 s, and a new value there is an update of that key.
+  const upd = t.ok("set_effect_param", P(1 + 0.25 * g, 9));
+  assert.deepEqual([upd.param.previousValue, upd.param.storedTime], [7, 1]);
+  // The same value there changes nothing, so it cannot be shown to map onto that key: refused, saying so.
+  const amb = t.run("set_effect_param", P(1 + 0.25 * g, 9));
+  assert.equal(amb.ok, false);
+  assert.match(amb.error, /no key changed[\s\S]*already holds 9 at 1 s[\s\S]*cannot be shown/);
+  assert.deepEqual(intensityKeys(t, 1), [[1, 9], [1.0000650882720947, 7]]);
 });
 
 console.log(`effect-stack: ${passed} checks passed`);

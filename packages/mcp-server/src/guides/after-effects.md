@@ -85,8 +85,8 @@ shot" and wrong for "a variant of this rig" — for that pass `deep: true`, whic
 duplicates the nested comps and re-points the copy at them.
 
 **Effects are added by matchName**, not display name:
-`add_effect({matchName: "ADBE Gaussian Blur 2"})`, then `set_effect_param` by
-parameter name. If you do not know a matchName, `list_available_effects({filter:
+`add_effect({matchName: "ADBE Gaussian Blur 2"})`, then `set_effect_param` with
+the effect's locator and the parameter's name. If you do not know a matchName, `list_available_effects({filter:
 "blur"})` — always with a `filter`, since the unfiltered list is several hundred
 entries and takes seconds every time. `list_effects` shows what is already on a
 layer with every parameter.
@@ -101,6 +101,14 @@ shift on every add, remove, duplicate or move, names repeat ("Bloom" twice is
 allowed), so read the stack again after each structural change. Removing an
 effect that an expression in the comp names is refused: After Effects would
 disable that expression without a word.
+
+`set_effect_param` and `set_effect_enabled` take the same locator — never a
+bare `effectIndex` — and refuse a stale one and a locked layer. Both change the
+effect's fingerprint, so read the stack again before the next locator. For
+nested parameters, several at once or real animation, go by property path
+instead: the effect's `path` from `get_effect_stack` → `inspect_property_tree`
+→ `set_property_values` / `set_keyframes`. Those paths are positional for
+repeated effects and check no locator, so take them fresh.
 
 ## Identify things by id, never by index
 
