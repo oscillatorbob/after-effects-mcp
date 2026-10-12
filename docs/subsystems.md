@@ -47,9 +47,10 @@ keeps the old behaviour rather than quietly asserting the install is sound.
 
 Three enforcement points, in order of preference:
 
-1. **The gate in `server.ts`** — one `/health` per session, cached; refuses to
+1. **The gate in `server.ts`** — one `/health` per interval, cached; refuses to
    forward and returns the remediation. `panelGate.invalidate()` after
-   `setup_panel`, because the disk half of the comparison just changed.
+   `setup_panel`, because the disk half of the comparison just changed, and
+   after `check_setup`, which has just asked the panel itself.
 2. **The `Unknown op:` backstop** — for panels too old to report a hash at all.
    This is never a false positive: `server.ts` validates tool names against
    `OpSchemas` before forwarding, so any op the panel rejects is one this server
@@ -58,7 +59,20 @@ Three enforcement points, in order of preference:
    `panelUpToDate`, which compares files and therefore goes green the instant
    `setup_panel` runs, while AE carries on running the old code.
 
-`tests/unit/panel-version.mjs` covers the decision table; CI runs it. Old panels
+**Both verdicts expire.** A healthy one is trusted for 60 s, a stale one for
+5 s. A stale verdict used to be kept for the life of the process, on the theory
+that only an AE restart resolves it and a restart drops the bridge. It does not:
+AE comes back on the same port between two calls, no port change fires, and in
+C4 (2026-10-11) the server went on refusing every op while `check_setup` —
+which asks fresh — reported `panelRunningCurrent` passing. Only `setup_panel`
+cleared it. The short stale window costs nothing: while it stands every op is
+refused anyway. A `/health` that fails drops the verdict too, since whatever
+answers next is a panel the gate has not seen.
+
+`tests/unit/panel-version.mjs` covers the decision table and
+`tests/unit/panel-gate.mjs` the cache — both expiries, port change,
+`invalidate()`, and `check_setup` and the gate never disagreeing past the next
+op; CI runs both. Old panels
 predate `bundleHash` entirely, so `undefined` must always mean "too old to say",
 never "matches".
 

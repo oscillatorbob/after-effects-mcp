@@ -102,6 +102,8 @@ export interface CreateServerOptions {
    * the drift path can be exercised without asking anything real on the machine.
    */
   bridge?: HttpClient;
+  /** The panel gate's re-check intervals. A test shortens or lengthens them. */
+  panelGate?: PanelGateOptions;
 }
 
 export function createServer(opts: CreateServerOptions = {}) {
@@ -125,7 +127,7 @@ export function createServer(opts: CreateServerOptions = {}) {
   // Follows the bridge's port rather than copying it: see wsClient.ts.
   const ws = new WsClient(bridge, jobs);
   ws.start();
-  const panelGate = createPanelGate(bridge);
+  const panelGate = createPanelGate(bridge, opts.panelGate);
 
   // The issue journal, pushed rather than pulled: every failed tool call is
   // answered with the journal entries that match its tool and error text, so
@@ -260,7 +262,13 @@ export function createServer(opts: CreateServerOptions = {}) {
         // Effects for a panel that is fine (recipe 43). probeBridge dedups.
         const setupOpts = () => ({ opPort: bridge.port, candidates: [...bridge.candidates(), ...diagnosticPortCandidates()] });
         if (name === "check_setup") {
-          return textResult(await checkSetup(setupOpts()));
+          const report = await checkSetup(setupOpts());
+          // check_setup has just asked the panel itself. Whatever the gate
+          // remembers is older than that, so the next op asks again rather than
+          // refusing on a verdict this report may already contradict — the
+          // state C4 met: panelRunningCurrent passing, every op still refused.
+          panelGate.invalidate();
+          return textResult(report);
         }
         if (name === "setup_panel") {
           const a = schemas.SetupPanel.parse(rawArgs);
@@ -717,34 +725,52 @@ const SNAPSHOT_COVERS =
   "effect count, plus comp size/duration/frame rate/work area/markers. Property values, expression text, " +
   "effect parameters and shape contents are not recorded.";
 
+export interface PanelGateOptions {
+  /** How long a healthy verdict is trusted before /health is asked again. */
+  recheckMs?: number;
+  /** How long a stale verdict is trusted before /health is asked again. */
+  staleRecheckMs?: number;
+  /** The clock. A test hands in its own. */
+  now?: () => number;
+}
+
 /**
- * Caches the panel-version verdict so it costs one /health per session rather
+ * Caches the panel-version verdict so it costs one /health per minute rather
  * than one per tool call.
  *
- * Only a *stale* verdict is remembered indefinitely — that state cannot resolve
- * itself without a restart of After Effects, which drops the bridge and clears
- * the cache anyway. A healthy verdict is re-checked periodically so a panel that
- * gets replaced mid-session is noticed. An unreachable bridge caches nothing:
- * that is `runOp`'s error to report, with a much better message than this.
+ * BOTH verdicts expire. A stale one used to be kept for the life of the
+ * process, on the theory that only an After Effects restart can resolve it and
+ * a restart drops the bridge and clears the cache. It does not: AE comes back
+ * on the same port between two calls, no port change fires, and the server went
+ * on refusing every op for a panel that `check_setup` (which asks fresh) was
+ * reporting current (C4, 2026-10-11). So a stale verdict is re-checked on a
+ * short interval — while it stands every op is refused anyway, so the extra
+ * /health costs nothing that was working — and a healthy one on a long
+ * interval, so a panel replaced mid-session is still noticed. An unreachable
+ * bridge caches nothing and drops what was cached: that is `runOp`'s error to
+ * report, with a much better message than this, and whatever answers next is
+ * a panel this gate has not seen.
  */
-function createPanelGate(bridge: HttpClient) {
-  const RECHECK_MS = 60_000;
+export function createPanelGate(bridge: HttpClient, opts: PanelGateOptions = {}) {
+  const recheckMs = opts.recheckMs ?? 60_000;
+  const staleRecheckMs = opts.staleRecheckMs ?? 5_000;
+  const now = opts.now ?? Date.now;
   let verdict: string | null = null;
-  let checkedAt = 0;
+  let checkedAt: number | null = null;
 
   // A verdict is about the panel on one port. When the bridge moves, whatever
   // was decided about the old one — stale or healthy — says nothing about the
   // panel now answering, so the next call has to ask again.
   bridge.onPortChange(() => {
     verdict = null;
-    checkedAt = 0;
+    checkedAt = null;
   });
 
   return {
     /** The message to return instead of forwarding, or null to proceed. */
     async check(): Promise<string | null> {
-      if (verdict !== null) return verdict;
-      if (Date.now() - checkedAt < RECHECK_MS) return null;
+      const ttl = verdict === null ? recheckMs : staleRecheckMs;
+      if (checkedAt !== null && now() - checkedAt < ttl) return verdict;
       try {
         const health = await bridge.health();
         // The gate is what every failed call quotes, so it has to know whether
@@ -756,7 +782,7 @@ function createPanelGate(bridge: HttpClient) {
         const assessment = assessPanel(health.bundleHash, installedBundleHash(installed), {
           installComplete: source ? panelInstallDiff(source, installed).length === 0 : undefined,
         });
-        checkedAt = Date.now();
+        checkedAt = now();
         verdict = assessment.state === "current" || assessment.state === "unknown" ? null : assessment.message;
         // "unknown" covers a panel too old to report a hash. Its message is a
         // warning rather than a certainty, so it is logged, not enforced — the
@@ -764,12 +790,14 @@ function createPanelGate(bridge: HttpClient) {
         if (assessment.state === "unknown" && assessment.message) logger.warn(assessment.message);
         return verdict;
       } catch {
+        verdict = null;
+        checkedAt = null;
         return null;
       }
     },
     invalidate() {
       verdict = null;
-      checkedAt = 0;
+      checkedAt = null;
     },
   };
 }

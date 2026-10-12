@@ -123,6 +123,12 @@ jobs:
       - name: Panel version mismatches are diagnosed correctly
         run: node tests/unit/panel-version.mjs
 
+      # How long the gate trusts that diagnosis. A stale verdict that never
+      # expires refuses every op after AE restarts onto the current panel on the
+      # same port, while check_setup reports it current (C4).
+      - name: The panel gate's cache recovers and agrees with check_setup
+        run: node tests/unit/panel-gate.mjs
+
       # No AE on a runner means nothing else here loads the panel's client code,
       # and the Windows form of this bug reads as a missing bundle.jsx.
       - name: Panel resolves the extension path CEP hands it
