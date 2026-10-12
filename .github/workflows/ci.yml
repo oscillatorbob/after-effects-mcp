@@ -311,6 +311,12 @@ jobs:
       - name: Effect stack edits hit exactly the named effect and verify it
         run: node tests/unit/effect-stack.mjs
 
+      # After Effects replaces an existing .aep without asking and declines a
+      # missing folder or a read-only file with a bare `false`: an overwrite
+      # check that goes missing, or a failure reported as a save, fails here.
+      - name: Save and Save As refuse overwrites and verify what is on disk
+        run: node tests/unit/save-project.mjs
+
       # Archive surgery on a file the user is about to hand to an editor: a
       # thumbnail worth looking at is not worth a corrupt .mogrt, so every
       # entry the patch does not mean to touch is checked byte-for-byte.

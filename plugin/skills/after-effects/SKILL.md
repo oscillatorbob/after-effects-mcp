@@ -174,6 +174,14 @@ failure the `diff: true` result rides on the error, which is the cheapest way �
 and never re-send the same call to see whether it fails again: the half that
 worked is applied a second time.
 
+**Saving is the user's call, and After Effects will overwrite anything.**
+`save_project` saves the open file in place; an unsaved project has none, so it
+needs `save_project_as` with an absolute `.aep` path in a folder that exists —
+ask the user where. After Effects replaces an existing file without a prompt, so
+`save_project_as` refuses one — the project's own current file included —
+unless `overwrite: true`, which you pass only when the user has said to replace
+that named file. Neither is undoable. Do not save as a habit after every edit.
+
 ## Screenshots are a diagnostic, not a feedback loop
 
 `screenshot_frame` and `screenshot_layer` are **one-off checks**. Do not

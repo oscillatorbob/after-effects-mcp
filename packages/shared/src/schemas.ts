@@ -1050,6 +1050,24 @@ export const DeleteProjectItem = z
       ),
   })
   .strict();
+// ---------- project file ----------
+// save.jsx. A path is absolute and ends in .aep: After Effects appends .aep to
+// any other name (measured), saving somewhere other than where it was asked.
+// Drive-letter, UNC and POSIX roots are all accepted here — which one this
+// machine has is the file system's answer, read in the handler, not the
+// schema's. The extension is matched without a regex flag because JSON
+// Schema's `pattern` carries none.
+const AepPath = z.string()
+  .regex(/^(?:[A-Za-z]:[\\/]|\\\\|\/).*\.[Aa][Ee][Pp]$/, "an absolute path ending in .aep")
+  .describe("Absolute path of the .aep to write, e.g. 'C:\\Projects\\Spot\\spot_v02.aep' or '/Users/me/Projects/spot_v02.aep'. Must end in .aep. Its folder must already exist.");
+export const SaveProject = z.object({}).strict();
+export const SaveProjectAs = z
+  .object({
+    path: AepPath,
+    overwrite: z.boolean().default(false)
+      .describe("Replace a file that already exists at `path` — including the project's own current file. After Effects replaces without asking, so this is the only protection the file has: pass true only when the user has explicitly said to replace that file."),
+  })
+  .strict();
 // ---------- layer structure ----------
 // structure.jsx. Every layer is named by id; an index is only ever reported.
 const StructLayerId = z.number().int().describe("A layer id from get_layer_structure or list_layers — never an index.");
@@ -1810,6 +1828,9 @@ export const OpSchemas = {
   move_project_item: MoveProjectItem,
   analyze_project_item_deletion: AnalyzeProjectItemDeletion,
   delete_project_item: DeleteProjectItem,
+  // project file
+  save_project: SaveProject,
+  save_project_as: SaveProjectAs,
   find_layers: FindLayers,
   inspect_property_tree: InspectPropertyTree,
   set_property_values: SetPropertyValues,
@@ -1973,6 +1994,11 @@ export const OpMutation = {
   rename_project_item: "write",
   move_project_item: "write",
   delete_project_item: "write",
+  // project file — they write the .aep and change the project's path and
+  // dirty flag, so they queue behind every other write. Not undoable, so no
+  // undo group (noUndo in save.jsx).
+  save_project: "write",
+  save_project_as: "write",
   find_layers: "read",
   // Never writes and never opens an undo group (noUndo in inspect.jsx).
   inspect_property_tree: "read",
