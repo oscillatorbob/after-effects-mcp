@@ -17,7 +17,7 @@ session is a tax on every request the user ever makes.
 | [`docs/fragile-areas-ae.md`](docs/fragile-areas-ae.md) | Measured After Effects and ExtendScript behaviour: undo, shapes, text, audio, mogrt, expressions, `run_jsx`. |
 | [`docs/fragile-areas-bridge.md`](docs/fragile-areas-bridge.md) | The bridge, ports, CEP, the panel, and the screenshot pipeline. |
 | [`docs/fragile-areas-server.md`](docs/fragile-areas-server.md) | Tool schemas and the MCP protocol, the journal's caches, packaging and binaries. |
-| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 63 recipes run by hand against a live AE 2026. |
+| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 65 recipes run by hand against a live AE 2026. |
 
 **Nothing in `docs/` is generated** — hand-written, like this file. The generated
 prose is elsewhere and is called out below.
@@ -88,7 +88,7 @@ One line each. The annotated version — why each file is the way it is — is i
 | `packages/jsx/timing.jsx` | `set_layer_timing` / `set_time_remap`, and the timing record `get_layer_structure` carries. One planner shared with `set_layer`'s timing fields: checked before the first write, written stretch → startTime → inPoint → outPoint (inPoint drags outPoint), read back, restored on failure. Disabling a customized Time Remap is refused — it deletes every key. |
 | `packages/jsx/effectstack.jsx` | The Effects stack: `get_effect_stack`, `add_effect`, `remove_effect`, `duplicate_effect`, `move_effect`, and the per-effect writes `set_effect_enabled` / `set_effect_param` (static values through `set_property_values`). Effects have no id, so a locator (index + matchName + name + fingerprint) is checked against the live stack; every write is verified by fingerprint and refused when expressions in the comp would break. **No regular expressions in its expression scanner** — ExtendScript hung on one. |
 | `packages/jsx/batch.jsx` | `run_batch` — inline under 500 ops, otherwise a chunked job. |
-| `packages/jsx/vision.jsx` | `saveFrameToPng` wrapper, the resolution factor, contact-sheet tiles. |
+| `packages/jsx/vision.jsx` | `saveFrameToPng` wrapper, the resolution factor, contact-sheet tiles. A capture's temporary changes go in one undo group, opened only when something changes, and are reported as `undo`; the panel totals it across retries. |
 | `packages/jsx/footage.jsx` | Import, footage layers, the SVG viewBox check, the shared solid/`usedIn` helpers. |
 | `packages/jsx/audio.jsx` | `place_audio_cues` — plan, import, build, roll back. Statement order is load-bearing. |
 | `packages/jsx/mogrt.jsx` | `export_mogrt` — preconditions first, dialogs suppressed, everything re-fetched afterwards. |

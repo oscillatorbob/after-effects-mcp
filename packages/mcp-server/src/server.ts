@@ -515,6 +515,7 @@ export function createServer(opts: CreateServerOptions = {}) {
           contactSheet?: boolean; cols?: number; rows?: number;
           cellWidth?: number; cellHeight?: number;
           tiles?: unknown[];
+          undo?: unknown;
         };
         return imageContent(
           {
@@ -543,6 +544,11 @@ export function createServer(opts: CreateServerOptions = {}) {
             cellWidth: v.cellWidth,
             cellHeight: v.cellHeight,
             tiles: v.tiles,
+            // What rendering this cost the user's Undo history, across every
+            // capture attempt the panel ran for it (retries included). An empty
+            // frame carries the same record through textResult above, and a
+            // failure carries it inside the error text.
+            undo: v.undo,
           },
           v.base64
         );

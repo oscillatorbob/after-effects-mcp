@@ -170,6 +170,9 @@
             lineCount: parsed.lineCount
           };
         }
+        // What a screenshot capture changed and opened before it failed — its
+        // undo group closed either way, and the request's Undo account needs it.
+        if (parsed.screenshotUndo !== undefined) err.screenshotUndo = parsed.screenshotUndo;
         throw err;
       }
       return parsed.result;
@@ -459,9 +462,118 @@
     return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
   }
 
-  // ---------- Rendering one frame, with one bounded retry ----------
-  function renderFrameOnce(op, args) {
+  // ---------- What a screenshot request did to the Undo history ----------
+  // Every ExtendScript capture a request runs is one entry — the first render,
+  // the bounded re-render below, a contact sheet's per-tile re-render — because
+  // each one that changed anything opened its own undo group (vision.jsx). The
+  // count is of groups OPENED; whether each is exactly one Edit-menu step is
+  // measured live (recipe 64), not asserted here. An attempt whose result never
+  // came back from ExtendScript is counted as unknown, never as zero.
+  function newShotLedger() {
+    return { attempts: 0, unknown: 0, groups: 0, insideCallerGroup: false, changes: [], problems: [], leftBehind: [] };
+  }
+  function recordShot(ledger, undo) {
+    if (!ledger) return;
+    ledger.attempts++;
+    if (!undo || typeof undo.undoGroupsOpened !== "number") { ledger.unknown++; return; }
+    ledger.groups += undo.undoGroupsOpened;
+    if (undo.insideCallerGroup) ledger.insideCallerGroup = true;
+    (undo.temporaryChanges || []).forEach(function (c) { if (ledger.changes.indexOf(c) < 0) ledger.changes.push(c); });
+    (undo.problems || []).forEach(function (p) { ledger.problems.push(p); });
+    (undo.leftBehind || []).forEach(function (x) { ledger.leftBehind.push(x); });
+  }
+  function runShot(op, args, ledger) {
     return runOp(op, args).then(function (info) {
+      recordShot(ledger, info && info.undo);
+      return info;
+    }, function (err) {
+      recordShot(ledger, err && err.screenshotUndo);
+      throw err;
+    });
+  }
+  // vision.jsx's change codes, as the sentence a user is read.
+  var SHOT_CHANGE_WORDS = {
+    "solo": "the solo flags",
+    "background solid": "a background solid",
+    "resolution": "the comp's resolution",
+  };
+  function shotChangesPhrase(changes) {
+    var words = changes.map(function (c) { return SHOT_CHANGE_WORDS[c] || c; });
+    if (words.length < 2) return words.join("");
+    return words.slice(0, -1).join(", ") + " and " + words[words.length - 1];
+  }
+  // Every claim in the note is one the attempts' own reports support, and no
+  // more: "restored" only when every attempt reported and read its restore
+  // back; restored settings kept apart from items left in the project; and
+  // "undoing it changes nothing" only when both of those are clean.
+  function shotUndoSummary(ledger) {
+    var restored = ledger.unknown ? null : ledger.problems.length === 0;   // null: not known
+    var s = {
+      captureAttempts: ledger.attempts,
+      undoGroupsOpened: ledger.groups,
+      undoGroupName: ledger.groups ? "AE MCP: screenshot (view only)" : undefined,
+      attemptsWithoutUndoInfo: ledger.unknown || undefined,
+      temporaryChanges: ledger.changes,
+      allRestored: restored,
+      problems: ledger.problems.length ? ledger.problems : undefined,
+      leftBehind: ledger.leftBehind.length ? ledger.leftBehind : undefined,
+    };
+    var n = ledger.groups;
+    var left = ledger.leftBehind.length;
+    var parts = [];
+
+    // What it changed, and where those changes sit in the Undo history.
+    if (n) {
+      parts.push("To render, this screenshot temporarily changed " + shotChangesPhrase(ledger.changes) +
+        ", inside " + n + " undo group" + (n > 1 ? "s" : "") + " named \"AE MCP: screenshot (view only)\"" +
+        (ledger.attempts > 1 ? " (" + ledger.attempts + " capture attempts, retries included)" : "") + ".");
+    } else if (ledger.insideCallerGroup && ledger.changes.length) {
+      parts.push("To render, this screenshot temporarily changed " + shotChangesPhrase(ledger.changes) +
+        " inside the caller's own undo group, so those changes are part of that step.");
+    }
+    if (ledger.unknown) {
+      parts.push(ledger.unknown + " of " + ledger.attempts + " capture attempt(s) did not report what they changed, " +
+        "so the Undo history may hold steps not counted here, and whether everything was put back is not known.");
+    }
+
+    // Whether the settings came back — said only when it is known.
+    if (ledger.problems.length) {
+      parts.push("NOT everything was put back: " + ledger.problems.join("; ") + ".");
+    } else if (!ledger.unknown && ledger.changes.length) {
+      parts.push((ledger.changes.length > 1 ? "Each of these was" : "It was") + " put back and read back as restored.");
+    }
+
+    // Items left in the project are a separate fact from restored settings.
+    if (left) {
+      parts.push("Left in the project: " + ledger.leftBehind.map(function (x) {
+        return (x.typeName || "item") + " \"" + x.name + "\" (id " + x.itemId + ")";
+      }).join(", ") + ".");
+    }
+
+    // What the user's next Undo will do.
+    if (n) {
+      var clean = restored === true;
+      var effect;
+      if (clean && !left) {
+        effect = "Undoing " + (n > 1 ? "each" : "it") + " changes nothing in the project.";
+      } else if (clean) {
+        effect = "Undoing " + (n > 1 ? "them" : "it") + " changes no setting, and should also remove the item" + (left > 1 ? "s" : "") +
+          " left above, which " + (left > 1 ? "were" : "was") + " made inside the same group (measured for the Solids folder a background leaves).";
+      } else {
+        effect = "What undoing " + (n > 1 ? "them" : "it") + " does to the project is not known exactly, because not everything was confirmed restored.";
+      }
+      parts.push((n > 1 ? "Each group" : "The group") + " can appear in After Effects' Edit menu as an Undo step of its own. " + effect +
+        " Tell the user, before they press Undo to reverse an earlier edit, that " + (n > 1 ? "these come" : "this comes") + " first.");
+    } else if (!ledger.unknown && !ledger.insideCallerGroup && !ledger.changes.length && !left) {
+      parts.push("Nothing in the project had to change to render this, so the Undo history is untouched.");
+    }
+    s.note = parts.join(" ");
+    return s;
+  }
+
+  // ---------- Rendering one frame, with one bounded retry ----------
+  function renderFrameOnce(op, args, ledger) {
+    return runShot(op, args, ledger).then(function (info) {
       return readPngFrame(info.path).then(function (img) {
         return { info: info, img: img };
       });
@@ -490,11 +602,11 @@
    * `waitForCompletePng`), and ExtendScript names a fresh one per call, so a
    * retry can never be handed the previous attempt's bytes.
    */
-  function renderFrameWithRetry(op, args) {
-    return renderFrameOnce(op, args).catch(function (first) {
+  function renderFrameWithRetry(op, args, ledger) {
+    return renderFrameOnce(op, args, ledger).catch(function (first) {
       if (first.code !== "FRAME_INCOMPLETE") throw dressFrameError(first, 1);
       log("warn", op + ": " + first.detail + " — re-rendering once");
-      return renderFrameOnce(op, args).catch(function (second) {
+      return renderFrameOnce(op, args, ledger).catch(function (second) {
         throw dressFrameError(second, 2);
       });
     });
@@ -649,7 +761,7 @@
     return String(s).split("\n")[0];
   }
 
-  function readSheetTile(info, tile) {
+  function readSheetTile(info, tile, ledger) {
     if (tile.error) {
       return Promise.resolve({ time: tile.time, status: "failed", note: tile.error });
     }
@@ -664,11 +776,11 @@
       // downsample is passed explicitly so the per-tile factor cannot drift from
       // the rest of the sheet.
       log("warn", "contact sheet tile at " + tile.time + "s: " + shortReason(err) + " — re-rendering once");
-      return runOp("screenshot_frame", {
+      return runShot("screenshot_frame", {
         compId: info.compId,
         time: tile.time,
         downsample: info.downsample,
-      }).then(function (retry) {
+      }, ledger).then(function (retry) {
         return readPngFrame(retry.path).then(function (img) {
           return { time: tile.time, status: "ok", img: img };
         });
@@ -814,8 +926,8 @@
     };
   }
 
-  function renderContactSheet(args) {
-    return runOp("screenshot_frame", args).then(function (info) {
+  function renderContactSheet(args, ledger) {
+    return runShot("screenshot_frame", args, ledger).then(function (info) {
       var jsxTiles = info.tiles || [];
       // Sequentially: `evalScript` is a mutex anyway, a per-tile retry re-enters
       // ExtendScript, and reading them in order keeps the panel log legible.
@@ -824,7 +936,7 @@
       for (var i = 0; i < jsxTiles.length; i++) {
         chain = chain.then(function (tile) {
           return function () {
-            return readSheetTile(info, tile).then(function (res) { read.push(res); });
+            return readSheetTile(info, tile, ledger).then(function (res) { read.push(res); });
           };
         }(jsxTiles[i]));
       }
@@ -852,62 +964,19 @@
     }
     // Vision ops: run JSX, then read PNG and base64-encode on Node side.
     if (op === "screenshot_frame" || op === "screenshot_layer") {
-      if (op === "screenshot_frame" && args && args.times && args.times.length) {
-        return renderContactSheet(args);
-      }
-      return renderFrameWithRetry(op, args).then(function (r) {
-        var info = r.info;
-        var img = r.img;
-        // A frame with nothing in it is a fact about the composition, not a
-        // failure — and the ~5KB PNG that encodes it is the one decoders
-        // reject. Report it, cheaply, instead of shipping an image nobody can
-        // read and calling that a successful screenshot.
-        if (img.empty) {
-          return {
-            empty: true,
-            width: img.width,
-            height: img.height,
-            fullWidth: info.width,
-            fullHeight: info.height,
-            downsample: info.downsample,
-            time: info.time,
-            compId: info.compId,
-            layerId: info.layerId,
-            reason: "Every pixel of this frame is fully transparent — the frame is empty. " +
-              "No image was sent because there is nothing in it to see. Usually this means " +
-              "the time is outside the layers' in/out points, the layers are disabled or " +
-              "have zero opacity, or the wrong comp was addressed.",
-          };
-        }
-        // Only a frame that read cleanly ever reaches the cache. A corrupt read
-        // is rejected above and never remembered — before the completeness gate
-        // existed, a truncated file was hashed and recorded here, so the next
-        // truncation at the same byte count was reported as a stale buffer and
-        // the real fault was hidden behind the wrong diagnosis.
-        var key = frameKey(op, info);
-        var match = frameCache.match(key, img.hash);
-        if (match) throw staleFrameError(frameLabel(op, info), match, img.buffer.length);
-        frameCache.remember(key, img.hash, { label: frameLabel(op, info), bytes: img.buffer.length });
-        return {
-          // Dimensions come from the PNG itself, not from arithmetic on the
-          // comp size, so they cannot disagree with the image sent.
-          width: img.width,
-          height: img.height,
-          fullWidth: info.width,
-          fullHeight: info.height,
-          downsample: info.downsample,
-          time: info.time,
-          compId: info.compId,
-          layerId: info.layerId,
-          mimeType: "image/png",
-          base64: img.buffer.toString("base64"),
-          bytes: img.buffer.length,
-          // Only present when the frame was not 8-bit as rendered, so the
-          // metadata stays quiet on the ordinary path.
-          converted: img.converted ? true : undefined,
-          sourceBitDepth: img.converted ? img.sourceBitDepth : undefined,
-          warning: img.warning,
-        };
+      // The account covers every capture this request runs, so it is attached
+      // to whatever the request ends in — image, empty frame, sheet or error.
+      var ledger = newShotLedger();
+      return renderScreenshot(op, args, ledger).then(function (out) {
+        out.undo = shotUndoSummary(ledger);
+        return out;
+      }, function (err) {
+        var summary = shotUndoSummary(ledger);
+        // Errors reach the agent as text only, so the account goes into it.
+        err.message = String(err.message) + "\n\nUndo: " + summary.note +
+          " (capture attempts: " + summary.captureAttempts + ", undo groups opened: " + summary.undoGroupsOpened +
+          (summary.attemptsWithoutUndoInfo ? ", attempts without undo info: " + summary.attemptsWithoutUndoInfo : "") + ")";
+        throw err;
       });
     }
     // Long batches: returns {jobId, async, total}. We kick off background drive
@@ -935,6 +1004,67 @@
       });
     }
     return runOp(op, args);
+  }
+
+  // Vision ops: run JSX, then read PNG and base64-encode on Node side.
+  function renderScreenshot(op, args, ledger) {
+    if (op === "screenshot_frame" && args && args.times && args.times.length) {
+      return renderContactSheet(args, ledger);
+    }
+    return renderFrameWithRetry(op, args, ledger).then(function (r) {
+      var info = r.info;
+      var img = r.img;
+      // A frame with nothing in it is a fact about the composition, not a
+      // failure — and the ~5KB PNG that encodes it is the one decoders
+      // reject. Report it, cheaply, instead of shipping an image nobody can
+      // read and calling that a successful screenshot.
+      if (img.empty) {
+        return {
+          empty: true,
+          width: img.width,
+          height: img.height,
+          fullWidth: info.width,
+          fullHeight: info.height,
+          downsample: info.downsample,
+          time: info.time,
+          compId: info.compId,
+          layerId: info.layerId,
+          reason: "Every pixel of this frame is fully transparent — the frame is empty. " +
+            "No image was sent because there is nothing in it to see. Usually this means " +
+            "the time is outside the layers' in/out points, the layers are disabled or " +
+            "have zero opacity, or the wrong comp was addressed.",
+        };
+      }
+      // Only a frame that read cleanly ever reaches the cache. A corrupt read
+      // is rejected above and never remembered — before the completeness gate
+      // existed, a truncated file was hashed and recorded here, so the next
+      // truncation at the same byte count was reported as a stale buffer and
+      // the real fault was hidden behind the wrong diagnosis.
+      var key = frameKey(op, info);
+      var match = frameCache.match(key, img.hash);
+      if (match) throw staleFrameError(frameLabel(op, info), match, img.buffer.length);
+      frameCache.remember(key, img.hash, { label: frameLabel(op, info), bytes: img.buffer.length });
+      return {
+        // Dimensions come from the PNG itself, not from arithmetic on the
+        // comp size, so they cannot disagree with the image sent.
+        width: img.width,
+        height: img.height,
+        fullWidth: info.width,
+        fullHeight: info.height,
+        downsample: info.downsample,
+        time: info.time,
+        compId: info.compId,
+        layerId: info.layerId,
+        mimeType: "image/png",
+        base64: img.buffer.toString("base64"),
+        bytes: img.buffer.length,
+        // Only present when the frame was not 8-bit as rendered, so the
+        // metadata stays quiet on the ordinary path.
+        converted: img.converted ? true : undefined,
+        sourceBitDepth: img.converted ? img.sourceBitDepth : undefined,
+        warning: img.warning,
+      };
+    });
   }
 
   // ---------- HTTP server ----------

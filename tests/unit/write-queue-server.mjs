@@ -243,6 +243,30 @@ await check("a singleUndo batch releases the queue when its call returns", async
   assert.equal(seen.map((s) => s.op).join(","), "run_batch,set_layer");
 });
 
+// Recipe 64: the server builds a screenshot's metadata field by field, so a new
+// panel field reaches the agent only if it is named there. A screenshot is a
+// read — it never queues — so this sits here only for the harness.
+await check("a screenshot's Undo account survives the server's image packaging, and an empty frame's too", async () => {
+  const undo = {
+    captureAttempts: 2, undoGroupsOpened: 2, undoGroupName: "AE MCP: screenshot (view only)",
+    temporaryChanges: ["resolution"], allRestored: true, note: "two groups",
+  };
+  behaviour.set("screenshot_frame", {
+    ms: 5,
+    result: { width: 4, height: 4, downsample: 2, time: 1, compId: 9, base64: "iVBORw0KGgo=", bytes: 8, undo },
+  });
+  const img = await call("screenshot_frame", { compId: 9, time: 1 });
+  assert.equal(img.content[1].type, "image");
+  assert.deepEqual(payload(img).undo, undo);
+
+  behaviour.set("screenshot_frame", {
+    ms: 5,
+    result: { empty: true, width: 4, height: 4, downsample: 2, time: 2, compId: 9, reason: "empty", undo },
+  });
+  const empty = await call("screenshot_frame", { compId: 9, time: 2 });
+  assert.deepEqual(payload(empty).undo, undo);
+});
+
 console.log(`write-queue-server: ${passed} checks passed`);
 // Settle before exiting: `process.exit()` straight after a `fetch` crashes
 // Node 24 on Windows with a libuv assertion (nodejs/node#56645; the note in

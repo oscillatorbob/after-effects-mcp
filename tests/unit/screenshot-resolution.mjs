@@ -61,10 +61,20 @@ class MockComp {
     this.height = o.height || 1080;
     this.time = 0.5;
     // The designer's viewer setting. Quarter unless a test says otherwise.
-    this.resolutionFactor = (o.resolutionFactor || QUARTER).slice();
+    // Every assignment is recorded: in After Effects each one is an Undo step,
+    // even one that assigns the value the comp already has (measured, 26.5).
+    this._rf = (o.resolutionFactor || QUARTER).slice();
+    this.rfSets = [];
+    this.refuseRestoreTo = o.refuseRestoreTo;   // a factor AE "accepts" but does not keep
     this.renders = [];          // { time, factor } as seen from inside the render
     this.failAt = o.failAt;     // a time whose render throws
     this.layers = [];
+  }
+  get resolutionFactor() { return this._rf; }
+  set resolutionFactor(v) {
+    this.rfSets.push(pair(v));
+    if (this.refuseRestoreTo && v[0] === this.refuseRestoreTo[0] && this.rfSets.length > 1) return;
+    this._rf = pair(v);
   }
   get numLayers() { return this.layers.length; }
   layer(i) { return this.layers[i - 1]; }
@@ -86,14 +96,22 @@ class MockComp {
 }
 
 class MockLayer {
-  constructor(id, name) { this.id = id; this.name = name; this.solo = false; }
+  constructor(id, name) { this.id = id; this.name = name; this.solo = false; this.enabled = true; }
 }
 
-function loadOps(comp) {
+// The undo-group calls a capture makes, in order. core.jsx's __beginUndoGroup is
+// the only caller of app.beginUndoGroup, so the stub stands in for both.
+let undoLog = [];
+function loadOps(comp, o) {
+  o = o || {};
+  undoLog = [];
   const ctx = {
     OPS: {},
     Math, Date, isFinite, Error, String,
     noUndo: (fn) => fn,
+    __UNDO_OPEN: o.insideCallerGroup === true,
+    __beginUndoGroup: (name) => undoLog.push(["begin", name]),
+    app: { endUndoGroup: () => undoLog.push(["end"]) },
     Folder: { temp: { fsName: "/tmp/ae-mcp-test" } },
     File: class { constructor(p) { this.path = p; } },
     getCompById: (id) => {
@@ -114,7 +132,7 @@ function loadOps(comp) {
 function scene(o) {
   const comp = new MockComp(o);
   comp.layers = [new MockLayer(1, "bg"), new MockLayer(2, "title"), new MockLayer(3, "chip")];
-  return { comp, ops: loadOps(comp) };
+  return { comp, ops: loadOps(comp, o) };
 }
 
 const factors = (comp) => comp.renders.map((r) => r.factor);
@@ -268,6 +286,135 @@ check("one tile that will not render costs neither the others nor the restore", 
   assert.ok(out.tiles[0].path && out.tiles[2].path);
   assert.deepEqual(factors(comp), [[1, 1], [1, 1], [1, 1]]);
   assert.deepEqual(viewer(comp), QUARTER, "a failed tile must not leave the comp at Full");
+});
+
+// ---------------------------------------------------------------------------
+// The Undo history (recipe 64). Measured on 26.5 before this fix: every
+// resolution assignment was its own "Resolution Change" step — even one that
+// assigned the value the comp already had — so a single frame cost the user
+// two steps and a 4-tile sheet eight, sitting on top of their last edit.
+// ---------------------------------------------------------------------------
+
+const plainOf = (v) => JSON.parse(JSON.stringify(v));
+const groups = () => undoLog.filter((e) => e[0] === "begin").length;
+const balanced = () => undoLog.filter((e) => e[0] === "begin").length === undoLog.filter((e) => e[0] === "end").length;
+
+check("U1. a capture at the viewer's own resolution assigns nothing and opens no group", () => {
+  for (const ds of [1, 2, 4]) {
+    const { comp, ops } = scene({ resolutionFactor: [ds, ds] });
+    const out = ops.screenshot_frame({ compId: comp.id, time: 1, downsample: ds });
+    assert.deepEqual(comp.rfSets, [], `viewer already at ${ds}: an unchanged assignment is still an Undo step in AE`);
+    assert.deepEqual(factors(comp), [[ds, ds]], "the render still sees the requested factor");
+    assert.equal(groups(), 0);
+    const u = plainOf(out.undo);
+    assert.equal(u.undoGroupsOpened, 0);
+    assert.equal(u.undoGroupName, null);
+    assert.deepEqual(u.temporaryChanges, []);
+    assert.equal(u.restored, true);
+  }
+});
+
+check("U2. a capture that must change the resolution does it inside ONE named group, closed after the restore", () => {
+  const { comp, ops } = scene();               // Quarter, asked for 2
+  const out = ops.screenshot_frame({ compId: comp.id, time: 1, downsample: 2 });
+  assert.deepEqual(comp.rfSets, [[2, 2], [4, 4]], "one set, one restore");
+  assert.deepEqual(undoLog, [["begin", "AE MCP: screenshot (view only)"], ["end"]]);
+  assert.deepEqual(viewer(comp), QUARTER);
+  const u = plainOf(out.undo);
+  assert.equal(u.undoGroupsOpened, 1);
+  assert.equal(u.undoGroupName, "AE MCP: screenshot (view only)");
+  assert.deepEqual(u.temporaryChanges, ["resolution"]);
+  assert.equal(u.restored, true);
+});
+
+check("U3. a contact sheet changes the resolution once for the whole sheet, not once per tile", () => {
+  const { comp, ops } = scene();
+  const out = ops.screenshot_frame({ compId: comp.id, times: [0, 1, 2, 3], downsample: 2 });
+  assert.deepEqual(factors(comp), [[2, 2], [2, 2], [2, 2], [2, 2]], "every tile still renders at the sheet's factor");
+  assert.deepEqual(comp.rfSets, [[2, 2], [4, 4]], "set before the first tile, restored after the last");
+  assert.equal(groups(), 1);
+  assert.ok(balanced());
+  assert.equal(plainOf(out.undo).undoGroupsOpened, 1);
+  // And at the viewer's own factor, a sheet costs nothing at all.
+  const same = scene({ resolutionFactor: [2, 2] });
+  const out2 = same.ops.screenshot_frame({ compId: same.comp.id, times: [0, 1, 2, 3], downsample: 2 });
+  assert.deepEqual(same.comp.rfSets, []);
+  assert.equal(plainOf(out2.undo).undoGroupsOpened, 0);
+});
+
+check("U4. a render that throws still restores, still closes the group, and the failure carries the account", () => {
+  const { comp, ops } = scene({ failAt: 2 });
+  let err;
+  try { ops.screenshot_frame({ compId: comp.id, time: 2, downsample: 1 }); } catch (e) { err = e; }
+  assert.ok(err, "the render failure must still be a failure");
+  assert.match(err.message, /could not render the frame/, "the original error is the one thrown");
+  assert.deepEqual(viewer(comp), QUARTER);
+  assert.ok(balanced(), "the group must close on the failure path too — one left open swallows the user's next edits");
+  const u = plainOf(err.aeDetail.screenshotUndo);
+  assert.equal(u.undoGroupsOpened, 1);
+  assert.deepEqual(u.temporaryChanges, ["resolution"]);
+  assert.equal(u.restored, true);
+});
+
+check("U5. one failed tile in a sheet: the sheet returns, the account covers the whole capture", () => {
+  const { comp, ops } = scene({ failAt: 1 });
+  const out = ops.screenshot_frame({ compId: comp.id, times: [0, 1, 2], downsample: 1 });
+  assert.match(out.tiles[1].error, /could not render the frame/);
+  assert.equal(groups(), 1);
+  assert.ok(balanced());
+  assert.equal(plainOf(out.undo).restored, true);
+  assert.deepEqual(viewer(comp), QUARTER);
+});
+
+check("U6. inside a caller's own undo group no group is opened; the changes join the caller's step", () => {
+  const { comp, ops } = scene({ insideCallerGroup: true });
+  const out = ops.screenshot_frame({ compId: comp.id, time: 1, downsample: 2 });
+  assert.equal(groups(), 0, "a nested beginUndoGroup would be closed by our endUndoGroup — and close the caller's too");
+  assert.deepEqual(undoLog, []);
+  assert.deepEqual(viewer(comp), QUARTER, "still restored");
+  const u = plainOf(out.undo);
+  assert.equal(u.undoGroupsOpened, 0);
+  assert.equal(u.insideCallerGroup, true);
+  assert.deepEqual(u.temporaryChanges, ["resolution"]);
+});
+
+check("U7. a restore After Effects does not keep is reported, not assumed", () => {
+  const { comp, ops } = scene({ refuseRestoreTo: QUARTER });
+  const out = ops.screenshot_frame({ compId: comp.id, time: 1, downsample: 2 });
+  const u = plainOf(out.undo);
+  assert.equal(u.restored, false);
+  assert.match(u.problems.join(" "), /resolution reads \[2,2\] after restoring, not its original \[4,4\]/);
+  assert.ok(balanced());
+});
+
+check("U8. screenshot_layer: solo and resolution changes share one group; nothing to change means no group", () => {
+  const { comp, ops } = scene();
+  comp.layers[0].solo = true;
+  const out = ops.screenshot_layer({ compId: comp.id, layerId: 2, downsample: 1 });
+  assert.equal(groups(), 1);
+  assert.ok(balanced());
+  const u = plainOf(out.undo);
+  assert.deepEqual(u.temporaryChanges, ["solo", "resolution"]);
+  assert.deepEqual(comp.layers.map((l) => l.solo), [true, false, false]);
+  // Target already the only solo, viewer already at the factor: no change at all.
+  const quiet = scene({ resolutionFactor: [1, 1] });
+  quiet.comp.layers[1].solo = true;
+  const out2 = quiet.ops.screenshot_layer({ compId: quiet.comp.id, layerId: 2, downsample: 1 });
+  assert.equal(groups(), 0);
+  assert.equal(plainOf(out2.undo).undoGroupsOpened, 0);
+  assert.deepEqual(quiet.comp.layers.map((l) => l.solo), [false, true, false], "the user's own solo is left exactly as it was");
+});
+
+check("U9. screenshot_layer that throws mid-render restores solo and resolution, closes the group, carries the account", () => {
+  const { comp, ops } = scene({ failAt: 0.5 });
+  comp.layers[2].solo = true;
+  let err;
+  try { ops.screenshot_layer({ compId: comp.id, layerId: 2, downsample: 1 }); } catch (e) { err = e; }
+  assert.ok(err);
+  assert.ok(balanced());
+  assert.deepEqual(comp.layers.map((l) => l.solo), [false, false, true]);
+  assert.deepEqual(viewer(comp), QUARTER);
+  assert.equal(plainOf(err.aeDetail.screenshotUndo).undoGroupsOpened, 1);
 });
 
 console.log(`screenshot-resolution: ${passed} checks passed`);

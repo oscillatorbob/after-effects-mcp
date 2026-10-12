@@ -124,8 +124,11 @@ function load() {
           var l = mkLayer({ id: id, name: name, enabled: true });
           // The backing FootageItem addSolid() creates alongside the layer —
           // a brand-new project item every call, never one that pre-existed.
+          if (c._solidsFolderSpec && !PROJECT_ITEMS.some(function (it) { return it.name === "Solids"; })) {
+            PROJECT_ITEMS.push({ id: 7000, name: "Solids", typeName: "Folder", remove: function () {} });
+          }
           var srcId = 8000 + c.addedSolids.length;
-          var src = { id: srcId, name: name, removed: false, remove: function () {
+          var src = { id: srcId, name: name, typeName: "Footage", removed: false, remove: function () {
             if (spec.throwOnSourceRemove) throw new Error(spec.throwOnSourceRemove);
             var idx = PROJECT_ITEMS.indexOf(src);
             if (idx >= 0) PROJECT_ITEMS.splice(idx, 1);
@@ -151,10 +154,22 @@ function load() {
 
       app.project = {
         itemByID: function (id) { return id === c.id ? c : null; },
-        get items() { return PROJECT_ITEMS.slice(); }
+        get items() { return PROJECT_ITEMS.slice(); },
+        get numItems() { return PROJECT_ITEMS.length; },
+        item: function (i) { return PROJECT_ITEMS[i - 1]; }
       };
+      // Real After Effects files a new solid in a "Solids" folder it creates
+      // when the project has none, and removing the solid leaves the folder
+      // (measured, recipe 63). Off by default; spec.solidsFolder turns it on.
+      c._solidsFolderSpec = !!spec.solidsFolder;
       return c;
     }
+
+    // The undo groups a capture opens, in order. core.jsx's __beginUndoGroup
+    // calls app.beginUndoGroup; nothing else may.
+    var UNDO_LOG = [];
+    app.beginUndoGroup = function (name) { UNDO_LOG.push(["begin", name]); };
+    app.endUndoGroup = function () { UNDO_LOG.push(["end"]); };
 
     function Folder(p) { this.fsName = p; }
     Folder.temp = new Folder("/tmp");
@@ -309,6 +324,61 @@ function load() {
   run({ compId: get("comp.id"), layerId: 1, time: 0, downsample: 1, background: "black" });
   eq(get("comp.layer(1).name"), "Logo", "the target layer's identity is untouched");
   eq(get("comp.layer(1).enabled"), true, "the target layer's enabled state is untouched");
+}
+
+// ---------------------------------------------------------------------------
+// The Undo history (recipe 64). Measured before this fix: a background capture
+// was eight separate Edit-menu steps — Toggle Switch, New Solid, Layer
+// Reordering, two Resolution Changes, Clear Layer, Remove Item, Toggle Switch —
+// and undoing part of them put the temporary solid back into the user's comp.
+// ---------------------------------------------------------------------------
+{
+  const { run, get } = load();
+  get(`mkComp({ layers: [{ id: 1 }, { id: 2 }] });`);
+  const res = run({ compId: get("comp.id"), layerId: 2, time: 0, downsample: 2, background: "black" });
+  eq(plain(get("UNDO_LOG")), [["begin", "AE MCP: screenshot (view only)"], ["end"]],
+    "solo, the solid and the resolution all change inside ONE group, closed after everything is put back");
+  const u = plain(res.undo);
+  eq(u.undoGroupsOpened, 1);
+  eq(u.temporaryChanges, ["solo", "background solid", "resolution"]);
+  eq(u.restored, true);
+  eq(u.leftBehind, [], "nothing new is left in the project when AE makes no folder");
+}
+
+{
+  // The Solids folder is reported, not removed — that fix is out of this pass.
+  const { run, get } = load();
+  get(`mkComp({ layers: [{ id: 1 }, { id: 2 }], solidsFolder: true });`);
+  const res = run({ compId: get("comp.id"), layerId: 2, time: 0, downsample: 1, background: "black" });
+  const u = plain(res.undo);
+  eq(u.leftBehind, [{ itemId: 7000, name: "Solids", typeName: "Folder" }], "the folder AE created is named in the account");
+  eq(u.restored, true, "a left-behind folder is not a failed restore of anything this call changed");
+}
+
+{
+  // A source that will not go is a restore that did not happen: reported as a
+  // problem AND as an item left behind, with its id.
+  const { run, get } = load();
+  get(`mkComp({ layers: [{ id: 1 }, { id: 2 }], throwOnSourceRemove: "source.remove() exploded" });`);
+  const res = run({ compId: get("comp.id"), layerId: 2, time: 0, downsample: 1, background: "black" });
+  const u = plain(res.undo);
+  eq(u.restored, false);
+  ok(/temporary background solid \(project item 8000\) could not be removed \(source\.remove\(\) exploded\)/.test(u.problems.join(" ")), u.problems.join(" | "));
+  eq(u.leftBehind.map((x) => x.itemId), [8000]);
+  eq(plain(get("UNDO_LOG")).length, 2, "the group still closed");
+}
+
+{
+  // A failed render: the throw carries the account, and the group is closed.
+  const { run, get } = load();
+  get(`mkComp({ layers: [{ id: 1 }, { id: 2 }], throwOnSave: "saveFrameToPng exploded" });`);
+  let err;
+  try { run({ compId: get("comp.id"), layerId: 1, time: 0, downsample: 1, background: "black" }); } catch (e) { err = e; }
+  ok(err && /saveFrameToPng exploded/.test(err.message), "the original failure is the one thrown");
+  const u = plain(err.aeDetail.screenshotUndo);
+  eq(u.undoGroupsOpened, 1);
+  eq(u.restored, true);
+  eq(plain(get("UNDO_LOG")), [["begin", "AE MCP: screenshot (view only)"], ["end"]]);
 }
 
 // ---------------------------------------------------------------------------

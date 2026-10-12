@@ -102,6 +102,17 @@ function png(shade, w = TILE_W, h = TILE_H) {
     chunk("IEND", Buffer.alloc(0)),
   ]);
 }
+/** A whole, valid frame with nothing in it: every pixel's alpha is 0. */
+function emptyPng(w = TILE_W, h = TILE_H) {
+  const rows = [];
+  for (let y = 0; y < h; y++) rows.push(Buffer.from([0]), Buffer.alloc(w * 4));
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  return Buffer.concat([SIG, chunk("IHDR", ihdr), chunk("IDAT", zlib.deflateSync(Buffer.concat(rows))), chunk("IEND", Buffer.alloc(0))]);
+}
 /** Not a PNG at all — refused on the first poll, no stall window needed. */
 const GARBAGE = Buffer.from("After Effects wrote something that is not a PNG");
 /** The shape #45 was reported in: a real frame cut off inside IDAT. */
@@ -131,8 +142,34 @@ function writeFrame(time) {
 
 const COMP = { id: 7, width: TILE_W * 4, height: TILE_H * 4 };
 
+// What vision.jsx reports for one capture. `plan.undo` is consumed one entry
+// per ExtendScript call; an empty queue means "one group, resolution changed
+// and put back" — the common case. "missing" stands for an attempt whose
+// account never came back.
+const ONE_GROUP = {
+  undoGroupsOpened: 1, undoGroupName: "AE MCP: screenshot (view only)", insideCallerGroup: false,
+  temporaryChanges: ["resolution"], restored: true, problems: [], leftBehind: [],
+};
+plan.undo = [];
+plan.calls = 0;
+function nextUndo() {
+  plan.calls++;
+  const u = plan.undo.length ? plan.undo.shift() : ONE_GROUP;
+  return u === "missing" ? undefined : u;
+}
+
 function dispatchStub(op, args) {
   if (op !== "screenshot_frame") throw new Error(`Unknown op: ${op}`);
+  const undo = nextUndo();
+  // A capture that failed inside ExtendScript: core.jsx copies the handler's
+  // aeDetail onto the envelope, so the account arrives beside the error.
+  if (plan.jsxFail) {
+    const f = plan.jsxFail;
+    plan.jsxFail = null;
+    const e = new Error(f.message);
+    e.envelope = { ok: false, error: f.message, screenshotUndo: undo };
+    throw e;
+  }
   if (args.times && args.times.length) {
     const ds = args.downsample || 4;
     return {
@@ -143,6 +180,7 @@ function dispatchStub(op, args) {
       compId: COMP.id,
       times: args.times,
       tiles: args.times.map((t) => ({ time: t, downsample: ds, path: writeFrame(t) })),
+      undo,
     };
   }
   const ds = args.downsample || 4;
@@ -154,6 +192,7 @@ function dispatchStub(op, args) {
     downsample: ds,
     time,
     compId: COMP.id,
+    undo,
   };
 }
 
@@ -174,7 +213,7 @@ function makeHost(extDir) {
         const p = parsePayload(script);
         body = JSON.stringify({ ok: true, result: dispatchStub(p.op, p.args) });
       } catch (e) {
-        body = JSON.stringify({ ok: false, error: e.message });
+        body = JSON.stringify(e.envelope || { ok: false, error: e.message });
       }
       setTimeout(() => cb(body), 0);
     },
@@ -434,6 +473,161 @@ await check("a sheet where nothing rendered is refused rather than sent as colou
   assert.match(body.error, /No tile of the contact sheet rendered/);
   assert.match(body.error, /7s: failed/);
   assert.match(body.error, /A sheet of coloured blocks is not a screenshot/);
+});
+
+// ---------------------------------------------------------------------------
+// Recipe 64: the Undo account reaches the caller, for every capture the
+// request ran — the panel's own re-renders included — on every path
+// ---------------------------------------------------------------------------
+const NO_GROUP = { ...ONE_GROUP, undoGroupsOpened: 0, undoGroupName: null, temporaryChanges: [] };
+const resetPlan = () => { plan.rendered = []; plan.undo = []; plan.calls = 0; plan.jsxFail = null; };
+
+await check("U-P1. a clean frame carries one capture and its one group", async () => {
+  resetPlan();
+  plan.queue = [png(111)];
+  const u = (await op({ compId: COMP.id, time: 20 })).result.undo;
+  assert.equal(u.captureAttempts, 1);
+  assert.equal(u.undoGroupsOpened, 1);
+  assert.equal(u.undoGroupName, "AE MCP: screenshot (view only)");
+  assert.equal(u.allRestored, true);
+  assert.match(u.note, /temporarily changed the comp's resolution, inside 1 undo group named "AE MCP: screenshot \(view only\)"\./);
+  assert.match(u.note, /It was put back and read back as restored\./);
+  assert.match(u.note, /Undoing it changes nothing in the project\./);
+  assert.match(u.note, /Tell the user, before they press Undo to reverse an earlier edit, that this comes first\./);
+});
+
+await check("U-P2. the automatic re-render is counted: two captures, two groups — never reported as one", async () => {
+  resetPlan();
+  plan.queue = [GARBAGE, png(112)];
+  const u = (await op({ compId: COMP.id, time: 21 })).result.undo;
+  assert.equal(plan.calls, 2);
+  assert.equal(u.captureAttempts, 2);
+  assert.equal(u.undoGroupsOpened, 2);
+  assert.match(u.note, /inside 2 undo groups .*\(2 capture attempts, retries included\)/);
+});
+
+await check("U-P3. a capture that changed nothing says the history is untouched", async () => {
+  resetPlan();
+  plan.queue = [png(113)];
+  plan.undo = [NO_GROUP];
+  const u = (await op({ compId: COMP.id, time: 22 })).result.undo;
+  assert.equal(u.undoGroupsOpened, 0);
+  assert.equal(u.undoGroupName, undefined);
+  assert.match(u.note, /the Undo history is untouched/);
+});
+
+await check("U-P4. an empty frame still carries the account", async () => {
+  resetPlan();
+  plan.queue = [emptyPng()];
+  const body = await op({ compId: COMP.id, time: 23 });
+  assert.equal(body.result.empty, true);
+  assert.equal(body.result.undo.captureAttempts, 1);
+  assert.equal(body.result.undo.undoGroupsOpened, 1);
+});
+
+await check("U-P5. a refused frame (corrupt twice) carries both captures in its error text", async () => {
+  resetPlan();
+  plan.queue = [GARBAGE, GARBAGE];
+  const body = await op({ compId: COMP.id, time: 24 }, "err");
+  assert.equal(body.code, "FRAME_INCOMPLETE");
+  assert.match(body.error, /^Corrupt frame:/, "the diagnosis still leads");
+  assert.match(body.error, /\n\nUndo: .*\(capture attempts: 2, undo groups opened: 2\)$/s);
+});
+
+await check("U-P6. a stale-frame refusal, which happens after a successful capture, still counts it", async () => {
+  resetPlan();
+  const same = png(114);
+  plan.queue = [same];
+  await op({ compId: COMP.id, time: 25 });
+  plan.queue = [same];
+  const body = await op({ compId: COMP.id, time: 26 }, "err");
+  assert.equal(body.code, "STALE_FRAME");
+  assert.match(body.error, /\(capture attempts: 1, undo groups opened: 1\)$/);
+});
+
+await check("U-P7. a contact sheet with one re-rendered tile counts the sheet and the re-render", async () => {
+  resetPlan();
+  plan.queue = [png(115), GARBAGE, png(116), png(117)];
+  const u = (await op({ compId: COMP.id, times: [30, 31, 32] })).result.undo;
+  assert.equal(plan.calls, 2, "the sheet, then one per-tile re-render");
+  assert.equal(u.captureAttempts, 2);
+  assert.equal(u.undoGroupsOpened, 2);
+});
+
+await check("U-P8. a sheet where nothing rendered carries the account in its refusal", async () => {
+  resetPlan();
+  plan.queue = [GARBAGE, GARBAGE, GARBAGE, GARBAGE];
+  const body = await op({ compId: COMP.id, times: [33, 34] }, "err");
+  assert.equal(body.code, "CONTACT_SHEET_FAILED");
+  assert.match(body.error, /\(capture attempts: 3, undo groups opened: 3\)$/, "the sheet and both tile re-renders");
+});
+
+await check("U-P9. an attempt whose account never arrived is counted as unknown, never as zero", async () => {
+  resetPlan();
+  plan.queue = [GARBAGE, png(118)];
+  plan.undo = ["missing", ONE_GROUP];
+  const u = (await op({ compId: COMP.id, time: 27 })).result.undo;
+  assert.equal(u.captureAttempts, 2);
+  assert.equal(u.undoGroupsOpened, 1, "only what was reported is counted");
+  assert.equal(u.attemptsWithoutUndoInfo, 1);
+  assert.match(u.note, /1 of 2 capture attempt\(s\) did not report what they changed/);
+  // Restoration is unknown, not assumed: the reported attempt restored, the
+  // unreported one may not have.
+  assert.equal(u.allRestored, null, "an unreported attempt makes restoration unknown");
+  assert.match(u.note, /whether everything was put back is not known/);
+  assert.doesNotMatch(u.note, /read back as restored/);
+  assert.doesNotMatch(u.note, /changes nothing/);
+  assert.match(u.note, /What undoing it does to the project is not known exactly/);
+});
+
+await check("U-P9b. only unreported attempts: no group counted, no 'history untouched' claim", async () => {
+  resetPlan();
+  plan.queue = [png(120)];
+  plan.undo = ["missing"];
+  const u = (await op({ compId: COMP.id, time: 35 })).result.undo;
+  assert.equal(u.allRestored, null);
+  assert.equal(u.undoGroupsOpened, 0);
+  assert.doesNotMatch(u.note, /untouched/, "an attempt that reported nothing cannot be said to have changed nothing");
+});
+
+await check("U-P12. a restore that did not land, on an otherwise successful frame, is never called restored", async () => {
+  resetPlan();
+  plan.queue = [png(121)];
+  plan.undo = [{ ...ONE_GROUP, restored: false, problems: ["layer 14's solo reads true after restoring"] }];
+  const u = (await op({ compId: COMP.id, time: 36 })).result.undo;
+  assert.equal(u.allRestored, false);
+  assert.deepEqual(u.problems, ["layer 14's solo reads true after restoring"]);
+  assert.match(u.note, /NOT everything was put back: layer 14's solo reads true after restoring\./);
+  assert.doesNotMatch(u.note, /read back as restored/);
+  assert.doesNotMatch(u.note, /changes nothing/);
+  assert.match(u.note, /What undoing it does to the project is not known exactly, because not everything was confirmed restored\./);
+});
+
+await check("U-P10. a capture that failed inside ExtendScript forwards its account, and an unfinished restore is said plainly", async () => {
+  resetPlan();
+  plan.jsxFail = { message: "After Effects error: could not render" };
+  plan.undo = [{ ...ONE_GROUP, restored: false, problems: ["the comp's resolution reads [2,2] after restoring, not its original [4,4]"] }];
+  const body = await op({ compId: COMP.id, time: 28 }, "err");
+  assert.match(body.error, /^After Effects error: could not render/);
+  assert.match(body.error, /NOT everything was put back: the comp's resolution reads \[2,2\]/);
+  assert.doesNotMatch(body.error, /changes nothing|read back as restored/);
+  assert.match(body.error, /\(capture attempts: 1, undo groups opened: 1\)$/);
+});
+
+await check("U-P11. a left-behind item is named in the note", async () => {
+  resetPlan();
+  plan.queue = [png(119)];
+  plan.undo = [{ ...ONE_GROUP, temporaryChanges: ["solo", "background solid", "resolution"], leftBehind: [{ itemId: 2344, name: "Solids", typeName: "Folder" }] }];
+  const u = (await op({ compId: COMP.id, time: 29 })).result.undo;
+  assert.deepEqual(u.leftBehind, [{ itemId: 2344, name: "Solids", typeName: "Folder" }]);
+  assert.match(u.note, /Left in the project: Folder "Solids" \(id 2344\)\./);
+  assert.match(u.note, /changed the solo flags, a background solid and the comp's resolution, inside 1 undo group/);
+  // Settings restored and items left over are separate facts — and the Undo
+  // is not "changes nothing" when it also removes the leftover (recipe 65, F).
+  assert.equal(u.allRestored, true, "every setting it changed came back");
+  assert.match(u.note, /Each of these was put back and read back as restored\./);
+  assert.doesNotMatch(u.note, /changes nothing/);
+  assert.match(u.note, /changes no setting, and should also remove the item left above/);
 });
 
 await check("every temp frame was cleaned up, whatever the verdict", () => {
