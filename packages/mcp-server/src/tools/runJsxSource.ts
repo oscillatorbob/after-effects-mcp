@@ -80,6 +80,77 @@ export interface ResolvedRunJsxArgs {
   libraries?: RunJsxLibrary[];
 }
 
+/**
+ * Calls After Effects will not make inside an open undo group, which is where
+ * every `run_jsx` script runs unless the caller passes `undoGroup: false`.
+ *
+ * Both are non-undoable operations that AE answers with a modal "undo group
+ * mismatch" warning when a group is open. ExtendScript is single-threaded, so
+ * the bridge cannot answer anything until the user clicks it, and the fix AE
+ * applies then rolls back what the script changed earlier in the same group.
+ * Measured with `queueInAME` on 26.5x89 (recipe 69): a script that armed eleven
+ * Render Queue items, set their output paths and handed them off stalled for
+ * between 46 s and 3.5 min. Each time, After Effects had written one item's
+ * temp project before the warning. After the click, the paths read back as
+ * the old ones and only the first item had reached Media Encoder. The same call
+ * alone with `undoGroup: false` returned in 47 ms with no dialog. The mogrt
+ * export's warning was measured for issue #23; see `packages/jsx/mogrt.jsx`.
+ *
+ * Refused here, before the panel is involved. This module already holds the
+ * script and every library as text. A rule here is testable without After
+ * Effects, and the refusal costs the user nothing.
+ *
+ * The match is a plain text search, so a mention inside a comment is refused
+ * too. That is the cheap side to be wrong on. A false refusal costs one more
+ * call with `undoGroup: false`. A miss costs a hung bridge and a rollback
+ * nobody reports. `withoutUndoGroup()` around the call is not accepted instead
+ * of `undoGroup: false`, because it has not been measured for either call.
+ */
+export const UNDO_GROUP_HOSTILE_CALLS: ReadonlyArray<{ call: string; pattern: RegExp; remedy: string }> = [
+  {
+    call: "queueInAME",
+    pattern: /\bqueueInAME\s*\(/,
+    remedy:
+      "Arm the Render Queue items and set their output paths in an earlier run_jsx call, then call " +
+      "`queueInAME` in a run_jsx of its own with `undoGroup: false`. Confirm delivery by the " +
+      "`tmpAEtoAMEProject-<comp>.aep` files After Effects writes into `<project>.aep_AME`, one per item, " +
+      "and re-read the output paths; an item's status is not the proof.",
+  },
+  {
+    call: "exportAsMotionGraphicsTemplate",
+    pattern: /\bexportAsMotionGraphicsTemplate\s*\(/,
+    remedy:
+      "Use the `export_mogrt` tool, which runs outside any undo group and suppresses the export's other " +
+      "dialogs, or pass `undoGroup: false`.",
+  },
+  {
+    call: "OPS.export_mogrt",
+    pattern: /\bOPS\s*\.\s*export_mogrt\s*\(/,
+    remedy:
+      "Call the `export_mogrt` tool itself. Reached through `OPS` it runs inside this script's undo group, " +
+      "which is the one thing that tool exists to avoid. Otherwise pass `undoGroup: false`.",
+  },
+];
+
+function refuseUndoGroupHostileCalls(out: ResolvedRunJsxArgs): void {
+  if (out.undoGroup === false) return;
+  const sources = [
+    { where: out.scriptPath ? `the script ${out.scriptPath}` : "the script", text: out.code },
+    ...(out.libraries ?? []).map((l) => ({ where: `the library ${l.path}`, text: l.text })),
+  ];
+  for (const hostile of UNDO_GROUP_HOSTILE_CALLS) {
+    const hit = sources.find((s) => hostile.pattern.test(s.text));
+    if (!hit) continue;
+    throw new Error(
+      `run_jsx refused before anything ran: ${hit.where} calls \`${hostile.call}(\`, and run_jsx wraps ` +
+        `the script in an undo group unless \`undoGroup: false\` is passed. After Effects will not make ` +
+        `that call inside an open undo group. It shows a modal "undo group mismatch" warning that blocks ` +
+        `this bridge until the user clicks it. The fix it then applies rolls back what the script changed ` +
+        `before the call. ${hostile.remedy}`
+    );
+  }
+}
+
 function readScriptFile(p: string, what: string): { text: string; bytes: number } {
   if (!path.isAbsolute(p)) {
     throw new Error(
@@ -119,7 +190,9 @@ function readScriptFile(p: string, what: string): { text: string; bytes: number 
  * Turn `{code | scriptPath, libraries}` into what the panel is sent.
  *
  * Throws with a message written for the agent — every failure names the path,
- * because the one thing the caller can act on is which file was wrong.
+ * because the one thing the caller can act on is which file was wrong. It also
+ * refuses a script, or a library, that makes a call After Effects will not make
+ * inside the undo group the script runs in (`UNDO_GROUP_HOSTILE_CALLS`).
  *
  * **Everything this function does not resolve passes through by construction.**
  * It used to build a fresh object and copy the fields it knew about, which made
@@ -132,7 +205,7 @@ function readScriptFile(p: string, what: string): { text: string; bytes: number 
  * would have failed the same silent way. The whitelist belongs to the zod
  * schema, which has already run by the time we get here and has already
  * stripped anything it does not declare; spreading is what makes this function
- * about its own two jobs and nothing else.
+ * about its own jobs and nothing else.
  */
 export function resolveRunJsxSource(args: RunJsxArgs): ResolvedRunJsxArgs {
   const hasCode = typeof args.code === "string" && args.code.length > 0;
@@ -206,6 +279,10 @@ export function resolveRunJsxSource(args: RunJsxArgs): ResolvedRunJsxArgs {
         `byte travels on every call. Pass only the libraries this script actually uses.`
     );
   }
+
+  // Last, so a missing file or an oversized call is named first: those are
+  // wrong whatever the undo group does.
+  refuseUndoGroupHostileCalls(out);
 
   return out;
 }

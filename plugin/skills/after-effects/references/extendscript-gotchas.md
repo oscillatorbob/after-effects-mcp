@@ -325,6 +325,22 @@ as a script, so they are in the `shapes` topic. The raw-scripting traps:
   does:* `run_batch` reports the measured `undoSteps`.
 - **`copyToComp` needs the group closed**, which is the opposite problem — see
   "Layers and comps".
+- **Handing the Render Queue to Media Encoder needs no group at all.**
+  `app.project.renderQueue.queueInAME(false)` inside `run_jsx`'s default group
+  makes After Effects show a modal "undo group mismatch" warning. The bridge
+  hangs until the user clicks it, and then After Effects rolls back what the
+  script changed earlier in the same call. Measured: the output paths the
+  script had just set reverted, and only the first of eleven items reached
+  Media Encoder, while `run_jsx` reported success. So do it in two calls.
+  First arm the items and set their paths. Then call `queueInAME` alone, with
+  `undoGroup: false`, which takes milliseconds and shows no dialog. Confirm
+  delivery by the `tmpAEtoAMEProject-<comp>.aep` files After Effects writes into
+  `<project>.aep_AME/`, one per item, and re-read the paths. An item's status
+  is not the proof. *The tool already does:* `run_jsx` refuses a script or
+  library that calls `queueInAME(`, `exportAsMotionGraphicsTemplate(` or
+  `OPS.export_mogrt(` unless `undoGroup: false` is passed. Never hand off from
+  a `run_batch` step. The batch's own group is open whatever the step says,
+  and nothing refuses it there.
 
 ## The language itself
 

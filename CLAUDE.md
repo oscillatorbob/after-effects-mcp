@@ -17,7 +17,7 @@ session is a tax on every request the user ever makes.
 | [`docs/fragile-areas-ae.md`](docs/fragile-areas-ae.md) | Measured After Effects and ExtendScript behaviour: undo, shapes, text, audio, mogrt, expressions, `run_jsx`. |
 | [`docs/fragile-areas-bridge.md`](docs/fragile-areas-bridge.md) | The bridge, ports, CEP, the panel, and the screenshot pipeline. |
 | [`docs/fragile-areas-server.md`](docs/fragile-areas-server.md) | Tool schemas and the MCP protocol, the journal's caches, packaging and binaries. |
-| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 68 recipes run by hand against a live AE 2026. |
+| [`docs/verification-recipes.md`](docs/verification-recipes.md) | The 69 recipes run by hand against a live AE 2026. |
 
 **Nothing in `docs/` is generated** — hand-written, like this file. The generated
 prose is elsewhere and is called out below.
@@ -106,7 +106,7 @@ One line each. The annotated version — why each file is the way it is — is i
 | `packages/ae-panel/client/mogrt.js` | Zip surgery + resample that replaces `thumb.png` in an exported `.mogrt`. |
 | `packages/mcp-server/src/server.ts` | Tool registry, return-shape branching, error mapping, `toolInputSchema()`. |
 | `…/tools/descriptions.ts` | All tool descriptions, written for an LLM reading the tool list cold. |
-| `…/tools/runJsxSource.ts` | `scriptPath` and `libraries`. The **server** reads those files, never the panel. |
+| `…/tools/runJsxSource.ts` | `scriptPath` and `libraries`. The **server** reads those files, never the panel. Also refuses calls AE will not make inside the undo group (`queueInAME`, the mogrt export). |
 | `…/tools/whatsNew.ts` | The `since` filter on the whats-new topic: semver compare, splitter, version header. |
 | `…/bridge/{httpClient,wsClient,discovery}.ts` | Bridge plumbing, port candidates, the panel-health test. |
 | `…/bridge/writeQueue.ts` | The one-writer-at-a-time mutex, and `extendUntil` for a lease that outlives its call. |

@@ -222,6 +222,75 @@ try {
     assert.equal(out.code, "return rig();\n");
     assert.equal(out.libraries.length, 1);
   });
+
+  // ---------- calls After Effects will not make inside an undo group ----------
+  //
+  // queueInAME inside run_jsx's default group stalled the bridge behind a modal
+  // "undo group mismatch" warning until the user clicked it, and the fix AE then
+  // applied rolled back the output paths the same script had set: only the
+  // first of eleven items reached Media Encoder, and run_jsx reported success
+  // (recipe 69). Nothing here can see After Effects, so these cases pin the
+  // refusal that stops the script from ever reaching it.
+
+  const handoff = "var rq = app.project.renderQueue;\nrq.queueInAME(false);\nreturn rq.numItems;\n";
+
+  check("queueInAME in the default undo group is refused, naming the call and the remedy", () => {
+    assert.throws(
+      () => resolveRunJsxSource({ code: handoff }),
+      (e) =>
+        /refused before anything ran/.test(e.message) &&
+        /`queueInAME\(`/.test(e.message) &&
+        /undo group mismatch/.test(e.message) &&
+        /`undoGroup: false`/.test(e.message) &&
+        /\.aep_AME/.test(e.message),
+      "the agent needs the call, why AE refuses it, the switch that fixes it and how to prove delivery",
+    );
+  });
+
+  rejects(
+    "an explicit undoGroup:true is the default, and is refused the same way",
+    { code: handoff, undoGroup: true },
+    /`queueInAME\(`/,
+  );
+
+  check("queueInAME with undoGroup:false passes untouched", () => {
+    const out = resolveRunJsxSource({ code: handoff, undoGroup: false });
+    assert.equal(out.code, handoff);
+    assert.equal(out.undoGroup, false);
+  });
+
+  check("a script file making the call is refused by its path", () => {
+    const p = write("handoff.jsx", handoff);
+    assert.throws(() => resolveRunJsxSource({ scriptPath: p }), (e) => e.message.includes(`the script ${p}`));
+    assert.equal(resolveRunJsxSource({ scriptPath: p, undoGroup: false }).code, handoff);
+  });
+
+  check("a library making the call is refused by its path, not blamed on the script", () => {
+    // Libraries are inlined ahead of the script into the same group, so the
+    // call is just as live there; the message has to say which file it is in.
+    const lib = write("ame.jsx", "function sendAll() { app.project.renderQueue.queueInAME(false); }\n");
+    assert.throws(
+      () => resolveRunJsxSource({ code: "sendAll();", libraries: [lib] }),
+      (e) => e.message.includes(`the library ${lib}`),
+    );
+    assert.equal(resolveRunJsxSource({ code: "sendAll();", libraries: [lib], undoGroup: false }).libraries.length, 1);
+  });
+
+  check("canQueueInAME is a read, not the handoff, and passes", () => {
+    const out = resolveRunJsxSource({ code: "return app.project.renderQueue.canQueueInAME;" });
+    assert.match(out.code, /canQueueInAME/);
+  });
+
+  rejects(
+    "the mogrt export is refused in the group too, pointing at export_mogrt",
+    { code: "comp.exportAsMotionGraphicsTemplate(true, path);" },
+    /`exportAsMotionGraphicsTemplate\(`.*`export_mogrt` tool/s,
+  );
+  rejects(
+    "OPS.export_mogrt from run_jsx runs inside the script's group, so it is refused as well",
+    { code: "return OPS.export_mogrt({ compId: 12 });" },
+    /`OPS\.export_mogrt\(`/,
+  );
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
